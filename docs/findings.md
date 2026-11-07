@@ -296,6 +296,18 @@ and west border) picks `pipeline_to_east/west` for category 0x6B and the same fo
 (error 0x4EB3). Types with the flag: the foreign pipeline, the power connections and
 the customs houses.
 
+### A waste truck's job searches (1.1.1.9)
+
+The office's pass 1c4e20 asks 19e330 (waste for an empty truck: the fullest waste slot of
+the office's buildings, by the entries' amount over the slot's size +8c and the
+resource's +2ec) and 19e750 (where a full truck unloads: a path search from the truck,
+in the order of distance). Both skip a building when 19f5f0 says the job is taken: from
+the building's offices +da8, each office's vehicles +c70, a waste truck (type +8600 ==
+0x11) with +698 == 0, first stop +680 the building and, given a resource, that resource
+in its first record's list (+638, 0x198 bytes each, list at +8). The state hash leaves
+those truck fields out. Logs of 2026-11-07: 5 of 9 sessions' first desyncs had these
+searches answer differently with the office's waste equal to the bit (`WASTE_TRACE`).
+
 ## Networks (roads, rails, pipes, power lines...)
 
 Inferred unless noted.

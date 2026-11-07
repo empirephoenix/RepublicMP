@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "office_guard.h"
 #include "determinism.h"
+#include "waste_trace.h"
 #include <stdint.h>
 #include <vector>
 #include <algorithm>
@@ -164,9 +165,12 @@ static bool HookedLookup(void* context, BYTE* building, void* resource)
         // Native true means another vehicle already owns this job (19e727):
         // conservatively refuse this candidate instead of following bad links.
         // This contains the crash; it does not repair the corrupted source list.
+        WasteTrace_Asked((unsigned __int64)building, (unsigned __int64)resource, true, true);
         return true;
     }
-    return o_lookup(context, building, resource);
+    bool taken = o_lookup(context, building, resource);
+    WasteTrace_Asked((unsigned __int64)building, (unsigned __int64)resource, taken, false);
+    return taken;
 }
 
 bool OfficeGuard_Install()

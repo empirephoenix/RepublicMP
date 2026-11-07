@@ -82,7 +82,8 @@ build (the build check refuses another DLL).
   day and its progress are always compared exactly.
 - The last game's log stays as `republicmp.previous.log`. A desync's money trace
   covers a whole check interval and shows both republics' accounts per tick and
-  the waste trucks' job searches (`WASTE_TRACE`).
+  the waste trucks' job searches (`WASTE_TRACE`): what each answered, what it read,
+  which jobs it found taken and by which truck, and each change of a truck's job.
 
 **Republics**
 
