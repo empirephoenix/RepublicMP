@@ -525,15 +525,21 @@ static DWORD WINAPI RecvThread(LPVOID param)
     return 0;
 }
 
-static void ResetState()
+// What the last connection brought and nobody handled yet.
+static void DropReceived()
 {
-    InterlockedExchange(&g_commandsReady, 0);
-    EnterCriticalSection(&g_delayLock); // the last session's held messages are dropped
+    EnterCriticalSection(&g_delayLock);
     g_delayed.clear();
     LeaveCriticalSection(&g_delayLock);
     EnterCriticalSection(&g_inLock);
     g_inbox.clear();
     LeaveCriticalSection(&g_inLock);
+}
+
+static void ResetState()
+{
+    InterlockedExchange(&g_commandsReady, 0);
+    DropReceived();
     for (Peer& p : g_peers) {
         p.connected = false;
         p.sock = NET_NO_LINK;
@@ -729,6 +735,10 @@ void LockstepNet_Close()
         }
     }
     g_peerSlots = 0;
+    // The polls go on through the next load, before the next connection resets
+    // this: a command left here would enter the new session with its old tick,
+    // and on a player every later command would wait behind it.
+    DropReceived();
 }
 
 const char* LockstepNet_LastRefusal() { return g_lastRefusal; }

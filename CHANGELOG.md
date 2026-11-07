@@ -50,6 +50,10 @@ build (the build check refuses another DLL).
   site's worker at a point read from before the start of the piece's points
   on some stages, which is whatever the memory held on that PC. The worker now
   stands at the piece's first point.
+- **Fix: commands lost after a re-sync** - a re-sync that cut off a command on its
+  way (terrain and brush strokes above all) left it waiting, and it entered the
+  next session with its old tick. A player then made none of the host's commands
+  until that tick came, and the games differed within seconds.
 - **Fix: a player's view after a re-sync** - every player got the host's view
   back: the game had already set the camera from the save when RepublicMP read
   "the view before the load". Each PC now keeps what it last showed, in the
