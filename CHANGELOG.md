@@ -50,9 +50,6 @@ build (the build check refuses another DLL).
   site's worker at a point read from before the start of the piece's points
   on some stages, which is whatever the memory held on that PC. The worker now
   stands at the piece's first point.
-- **Fix: the game stopped at every load** (a test build only) - two types of
-  the same name in the mod shared code at the link, and reading the save's
-  `republicmp.ini` before the load ended the game (`0xC0000409` in RepublicMP.dll).
 - **Fix: commands lost after a re-sync** - a re-sync that cut off a command on its
   way (terrain and brush strokes above all) left it waiting, and it entered the
   next session with its old tick. A player then made none of the host's commands
@@ -83,15 +80,18 @@ build (the build check refuses another DLL).
   it can hide a real money drift), money that differs by less than 1 ruble or
   1 dollar matches; the first such difference in a session is logged once. The
   day and its progress are always compared exactly.
-- The last game's log stays as `republicmp.previous.log`. A desync's money trace
-  covers a whole check interval and shows both republics' accounts per tick and
-  the construction sites paid with money or with a progress below 0 every 300 ticks,
-  the waste trucks' job searches (`WASTE_TRACE`): what each answered, what it read,
-  which jobs it found taken and by which truck, each change of a truck's job, each
-  waste slot as the search judges it, and the search's answer when asked once more.
-  The games' comparison covers the waste trucks' jobs too (`waste trucks' jobs`):
-  their searches had parted a hundred ticks or more before the trucks' positions did,
-  out of the report's reach.
+- The last game's log stays as `republicmp.previous.log`.
+- **Desync reports** - a desync's money trace covers a whole check interval and
+  shows both republics' accounts per tick. The waste trucks' job searches are in
+  the report (`WASTE_TRACE`): what each answered and read, which jobs it found
+  taken and by which truck, each change of a truck's job, and each waste slot as
+  the search judges it. The log also lists, every 300 ticks, the construction
+  sites paid with money or with a progress below 0.
+- **The waste trucks' jobs are compared too** (`waste trucks' jobs`) - the games'
+  check covered a truck's position and cargo only, so trucks whose jobs had parted
+  showed as a desync a hundred ticks or more later, out of the report's reach. A
+  desync may now be reported sooner than before: it is the same one, caught when
+  it starts.
 
 **Republics**
 
@@ -174,14 +174,22 @@ build (the build check refuses another DLL).
 
 **Known problems**
 
+- **Waste trucks** are still the most common desync: an office's search for a job
+  can answer differently on two PCs with everything it reads equal. The cause is
+  not found yet; the report above is there to find it.
+- A train can drift by a centimetre between PCs (seen once, a cement train).
 - A building's access road can differ in the last bits of its points between PCs.
   The site's materials then differ a little, and the money parts until a re-sync
   (a `clock/money` desync). The log's placement line shows the road's ends.
+- Republics: a construction site can be left paying with money with a progress
+  below 0, and never finish; the log lists such sites. An access road the building
+  tool lays can still reach the other republic.
 - The check behind the crash fix above finds a freed mesh only when it no longer
-  reads as one; what frees it is not known yet.
+  reads as one; what frees it is not known yet. A crash in an office window
+  (`SOVIET64.exe+0x7A611B`) was seen once.
 - Not tried on two PCs yet: relocation, buoys, Christmas lights, squares, "Go
-  there", the vehicle pick tools, and buying ships, planes and helicopters with
-  realistic construction.
+  there", the vehicle pick tools, and buying ships and planes with realistic
+  construction.
 
 ## 0.7.6
 
