@@ -47,6 +47,10 @@ struct StateSummary {
     unsigned long long hashBuildings;
     unsigned long long hashVehicles;
     unsigned long long hashCitizens;
+    // The waste trucks' jobs (their state, path, stops and what each stop takes):
+    // the searches of 2026-11-08 parted on them a hundred ticks or more before the
+    // trucks' positions did.
+    unsigned long long hashJobs;
 };
 
 void StateHash_Bind(const ModHost* host);

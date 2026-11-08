@@ -828,6 +828,7 @@ static void Compare(int index, const LsHash& theirs)
     if (a.hashBuildings != b.hashBuildings) strcat_s(what, "buildings ");
     if (a.hashVehicles != b.hashVehicles) strcat_s(what, "vehicles ");
     if (a.hashCitizens != b.hashCitizens) strcat_s(what, "citizens ");
+    if (a.hashJobs != b.hashJobs) strcat_s(what, "waste trucks' jobs ");
     if (g_desync[0] && theirs.tick != g_desyncTick) {
         // Later ticks: the games go on differing, or match again - a
         // difference of that moment only (something one PC alone listed then).

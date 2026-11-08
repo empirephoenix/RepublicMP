@@ -6,7 +6,7 @@ The mod no longer needs a loader: it starts through its own `xinput9_1_0.dll`.
 Almost every tool that was put away now works in a session, ships, planes and
 helicopters can be bought with realistic construction, each player chooses rubles,
 dollars or realistic for themselves, and the Republics mode has its own money, a
-balanced border and customs houses on it. Protocol 82 - every player needs this
+balanced border and customs houses on it. Protocol 83 - every player needs this
 build (the build check refuses another DLL).
 
 **Installing**
@@ -89,6 +89,9 @@ build (the build check refuses another DLL).
   the waste trucks' job searches (`WASTE_TRACE`): what each answered, what it read,
   which jobs it found taken and by which truck, each change of a truck's job, each
   waste slot as the search judges it, and the search's answer when asked once more.
+  The games' comparison covers the waste trucks' jobs too (`waste trucks' jobs`):
+  their searches had parted a hundred ticks or more before the trucks' positions did,
+  out of the report's reach.
 
 **Republics**
 

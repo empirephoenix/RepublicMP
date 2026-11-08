@@ -1896,6 +1896,7 @@ static void CompareRuns()
         if (a.hashBuildings != b.hashBuildings) strcat_s(parts, "buildings ");
         if (a.hashVehicles != b.hashVehicles) strcat_s(parts, "vehicles ");
         if (a.hashCitizens != b.hashCitizens) strcat_s(parts, "citizens ");
+        if (a.hashJobs != b.hashJobs) strcat_s(parts, "waste trucks' jobs ");
         SetProbeStatus("DIFFERENT from step %llu (sample %d/%d): %s- draws %llu/%llu, vehicles %d/%d, citizens %d/%d, "
                        "storage %.1f/%.1f", g_samples[0][i].step, i + 1, n, parts, pa.draws, pb.draws, a.vehicles,
                        b.vehicles, a.citizens, b.citizens, a.storageTotal, b.storageTotal);
