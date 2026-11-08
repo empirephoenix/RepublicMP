@@ -10,7 +10,12 @@
 // answer parted. Logs of 2026-11-07 had the answers part with the waste equal, so each
 // question to 19f5f0 inside a search is noted too (is this job taken, and by which
 // truck), with each change of a truck's job (+698, +680, +638, +6a0, +700, which the
-// state hash leaves out). It only reads and draws no random numbers.
+// state hash leaves out). Logs of 2026-11-08 had a search pick nothing on one PC with
+// every hash equal and two candidates on the other, so each waste slot of the office's
+// buildings is noted as the search judges it (19e330's sum and fill, 4292d0, 4291e0,
+// 19cd70), with the thread's SSE control word, and the search is asked once more right
+// after: it only reads, so a second answer that differs means what it reads changed
+// while it ran. It only reads and draws no random numbers.
 #pragma once
 
 #include "host.h"

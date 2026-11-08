@@ -87,7 +87,8 @@ build (the build check refuses another DLL).
   covers a whole check interval and shows both republics' accounts per tick and
   the construction sites paid with money or with a progress below 0 every 300 ticks,
   the waste trucks' job searches (`WASTE_TRACE`): what each answered, what it read,
-  which jobs it found taken and by which truck, and each change of a truck's job.
+  which jobs it found taken and by which truck, each change of a truck's job, each
+  waste slot as the search judges it, and the search's answer when asked once more.
 
 **Republics**
 

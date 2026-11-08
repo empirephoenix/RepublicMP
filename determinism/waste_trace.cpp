@@ -2,12 +2,20 @@
 // See waste_trace.h.
 #include "waste_trace.h"
 #include "determinism.h"
+#include <intrin.h> // _mm_getcsr
 #include <map>
 #include <vector>
 
 typedef unsigned __int64 U64;
 
 #define FIND_WASTE_RVA 0x19E330
+#define SLOT_LIMIT_RVA 0x4292D0    // (world, slot): the resource of the slot's second list at 1.0 or more
+#define SLOT_SMALL_RVA 0x4291E0    // (-, slot, at most): every entry's amount at most that
+#define SLOT_PICK_RVA 0x19CD70     // (world, slot, above): the resource to take
+#define SMALL_AMOUNT 9.99999975e-05f // 909a8c, what 19e330 gives 4291e0
+#define FULL_RATIO 1.0f            // 909f58
+#define SLOT_NOTES 32768
+#define SLOTS_PER_SEARCH 128
 #define FIND_UNLOAD_RVA 0x19E750
 #define WORLD_RVA 0x9D4F10
 #define RESOURCES_OFFSET 0xC2B0
@@ -63,6 +71,24 @@ struct Note {
     float x, z;   // kind 1: the truck
     float arg;    // kind 0 the truck's capacity, kind 1 the radius
     int flag;
+    unsigned mxcsr;  // the thread's SSE control word at the search
+    int inStep;      // the search ran in a tick's frame
+    int again;       // kind 0: the building the same search answers right after, -3 not asked
+    int againResource;
+};
+
+// One waste slot of the office's buildings as 19e330 judges it, read just before
+// the search: whether it may be picked follows from these alone.
+struct SlotNote {
+    unsigned long long tick;
+    int office, site, slot;
+    int mode;            // +88: 19e330 takes 5, or 6 with its flag
+    int entries;
+    unsigned amountBits; // the entries' amounts summed, as 19e330 sums them
+    unsigned ratioBits;  // their fill, 0..1, as 19e330 works it out
+    int limit;           // 4292d0's resource
+    int small;           // 4291e0's answer
+    int pick;            // 19cd70's resource
 };
 
 // One question to 19f5f0 inside a search: is this job taken?
@@ -107,6 +133,8 @@ static Note g_notes[NOTES];
 static unsigned long long g_count = 0;
 static Asked g_asked[ASKED_NOTES];
 static unsigned long long g_askedCount = 0;
+static SlotNote g_slots[SLOT_NOTES];
+static unsigned long long g_slotCount = 0;
 static TruckChange g_changes[CHANGE_NOTES];
 static unsigned long long g_changeCount = 0;
 static unsigned long long g_lastTick = 0;
@@ -332,12 +360,80 @@ static unsigned SnapshotTrucks(unsigned long long tick)
 static void BeginNote(unsigned long long tick)
 {
     if (tick < g_lastTick) {
-        g_count = g_askedCount = g_changeCount = 0;
+        g_count = g_askedCount = g_changeCount = g_slotCount = 0;
         EnterCriticalSection(&g_lock);
         g_known.clear();
         LeaveCriticalSection(&g_lock);
     }
     g_lastTick = tick;
+}
+
+typedef U64 (*SlotLimitFn)(U64 world, U64 slot);
+typedef bool (*SlotSmallFn)(U64 unused, U64 slot, float atMost);
+typedef U64 (*SlotPickFn)(U64 world, U64 slot, float above);
+
+// One slot, under a handler: 19e330's own sum and fill, and its three helpers' answers.
+static bool ReadSlot(U64 world, U64 slot, SlotNote* n)
+{
+    __try {
+        if (*(int*)(slot + SLOT_KIND) != WASTE_KIND) return false;
+        n->mode = *(int*)(slot + SLOT_MODE);
+        float sum = 0.0f, fill = 0.0f, ratio = 0.0f;
+        int entries = 0;
+        U64 first = Q(slot), last = Q(slot + 8);
+        for (U64 it = first; it && it < last && entries < MAX_LISTED; it += SLOT_ENTRY_BYTES, entries++) sum += *(float*)(it + 8);
+        if (entries) {
+            for (U64 it = first; it && it < last; it += SLOT_ENTRY_BYTES) {
+                float size = *(float*)(slot + SLOT_SIZE) * *(float*)(Q(it) + RESOURCE_WEIGHT);
+                if (size != 0.0f) fill += *(float*)(it + 8) / size;
+            }
+            if (0.0f <= fill) ratio = fill > FULL_RATIO ? FULL_RATIO : fill;
+        }
+        n->entries = entries;
+        memcpy(&n->amountBits, &sum, 4);
+        memcpy(&n->ratioBits, &ratio, 4);
+        n->limit = ResourceIndex(((SlotLimitFn)(g_exeBase + SLOT_LIMIT_RVA))(world, slot));
+        n->small = ((SlotSmallFn)(g_exeBase + SLOT_SMALL_RVA))(world, slot, SMALL_AMOUNT) ? 1 : 0;
+        n->pick = ResourceIndex(((SlotPickFn)(g_exeBase + SLOT_PICK_RVA))(world, slot, 0.0f));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Every waste slot of the office's buildings, before the search.
+static void NoteSlots(unsigned long long tick, U64 world, U64 office)
+{
+    int officeId = BuildingId(office), noted = 0;
+    U64 b = 0, e = 0;
+    __try {
+        b = office ? Q(office + OFFICE_SITES) : 0;
+        e = office ? Q(office + OFFICE_SITES + 8) : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+    for (unsigned i = 0; b && b + (U64)i * 8 < e && i < MAX_LISTED && noted < SLOTS_PER_SEARCH; i++) {
+        U64 site = 0, slot = 0, last = 0;
+        __try {
+            site = Q(b + (U64)i * 8);
+            if (site) {
+                slot = Q(site + SLOTS);
+                last = Q(site + SLOTS + 8);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            continue;
+        }
+        for (int k = 0; slot && slot < last && noted < SLOTS_PER_SEARCH; slot += SLOT_BYTES, k++) {
+            SlotNote n = {};
+            if (!ReadSlot(world, slot, &n)) continue;
+            n.tick = tick;
+            n.office = officeId;
+            n.site = BuildingId(site);
+            n.slot = k;
+            g_slots[g_slotCount++ % SLOT_NOTES] = n;
+            noted++;
+        }
+    }
 }
 
 static void Keep(const Note& n)
@@ -363,11 +459,20 @@ U64 WasteTrace_FindWaste(U64 world, U64 office, float capacity, U64 list, unsign
         HashResourceList(n.listHash, list);
         HashResourceList(n.listHash, list2);
         n.truckHash = SnapshotTrucks(n.tick);
+        NoteSlots(n.tick, world, office);
+        n.mxcsr = _mm_getcsr();
+        n.inStep = Determinism_InStepFrame() ? 1 : 0;
         t_inSearch = true;
     }
     U64 r = ((FindWasteFn)(g_exeBase + FIND_WASTE_RVA))(world, office, capacity, list, flag, resource, list2);
     if (trace) {
         t_inSearch = false;
+        // The search only reads: asked again at once it answers the same, unless what
+        // it reads changes while it runs.
+        U64 againResource = 0;
+        U64 again = ((FindWasteFn)(g_exeBase + FIND_WASTE_RVA))(world, office, capacity, list, flag, &againResource, list2);
+        n.again = BuildingId(again);
+        n.againResource = ResourceIndex(againResource);
         n.kind = 0;
         n.subject = BuildingId(office);
         n.answer = BuildingId(r);
@@ -396,6 +501,9 @@ U64 WasteTrace_FindUnload(U64 world, U64 vehicle, U64 resource, float radius, un
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
         n.truckHash = SnapshotTrucks(n.tick);
+        n.mxcsr = _mm_getcsr();
+        n.inStep = Determinism_InStepFrame() ? 1 : 0;
+        n.again = -3;
         t_inSearch = true;
     }
     U64 r = ((FindUnloadFn)(g_exeBase + FIND_UNLOAD_RVA))(world, vehicle, resource, radius, flag);
@@ -466,11 +574,13 @@ void WasteTrace_Dump(unsigned long long tick)
         if (n.tick > tick || n.tick + NOTES_DUMPED <= tick) continue;
         ++written;
         if (n.kind == 0)
-            Logf("republicmp  WASTE_TRACE: tick %llu office %d looks for waste (capacity %.9g, flag %d): building %d, resource %d; the office's waste %.9g hash %08X, sites %08X, lists %08X, trucks %08X",
-                 n.tick, n.subject, n.arg, n.flag, n.answer, n.resource, n.amount, n.wasteHash, n.siteHash, n.listHash, n.truckHash);
+            Logf("republicmp  WASTE_TRACE: tick %llu office %d looks for waste (capacity %.9g, flag %d): building %d, resource %d (again: %d, %d); the office's waste %.9g hash %08X, sites %08X, lists %08X, trucks %08X; mxcsr %04X, step %d",
+                 n.tick, n.subject, n.arg, n.flag, n.answer, n.resource, n.again, n.againResource, n.amount, n.wasteHash, n.siteHash,
+                 n.listHash, n.truckHash, n.mxcsr, n.inStep);
         else
-            Logf("republicmp  WASTE_TRACE: tick %llu truck %d at (%.9g,%.9g) looks to unload resource %d (radius %.9g, flag %d): building %d; its office's waste %.9g hash %08X, sites %08X, trucks %08X",
-                 n.tick, n.subject, n.x, n.z, n.resource, n.arg, n.flag, n.answer, n.amount, n.wasteHash, n.siteHash, n.truckHash);
+            Logf("republicmp  WASTE_TRACE: tick %llu truck %d at (%.9g,%.9g) looks to unload resource %d (radius %.9g, flag %d): building %d; its office's waste %.9g hash %08X, sites %08X, trucks %08X; mxcsr %04X, step %d",
+                 n.tick, n.subject, n.x, n.z, n.resource, n.arg, n.flag, n.answer, n.amount, n.wasteHash, n.siteHash, n.truckHash,
+                 n.mxcsr, n.inStep);
     }
     Logf("republicmp  WASTE_TRACE: %d search(es) in the ticks before %llu, %llu since the load", written, tick, g_count);
 
@@ -480,6 +590,17 @@ void WasteTrace_Dump(unsigned long long tick)
         if (a.tick > tick || a.tick + NOTES_DUMPED <= tick) continue;
         if (a.taken == 1) Logf("republicmp  WASTE_TRACE: tick %llu building %d resource %d: job taken by truck %d", a.tick, a.building, a.resource, a.truck);
         else Logf("republicmp  WASTE_TRACE: tick %llu building %d resource %d: %s", a.tick, a.building, a.resource, a.taken == 2 ? "refused by the office guard" : "job free");
+    }
+
+    first = g_slotCount > SLOT_NOTES ? g_slotCount - SLOT_NOTES : 0;
+    for (unsigned long long i = first; i < g_slotCount; i++) {
+        const SlotNote& sl = g_slots[i % SLOT_NOTES];
+        if (sl.tick > tick || sl.tick + NOTES_DUMPED <= tick) continue;
+        float amount, ratio;
+        memcpy(&amount, &sl.amountBits, 4);
+        memcpy(&ratio, &sl.ratioBits, 4);
+        Logf("republicmp  WASTE_TRACE: tick %llu office %d building %d slot %d: mode %d, %d entries, amount %.9g (%08X), fill %.9g (%08X), limit %d, small %d, pick %d",
+             sl.tick, sl.office, sl.site, sl.slot, sl.mode, sl.entries, amount, sl.amountBits, ratio, sl.ratioBits, sl.limit, sl.small, sl.pick);
     }
 
     char line[192];
