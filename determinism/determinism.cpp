@@ -1254,6 +1254,7 @@ void Determinism_NoteSiteInputs(unsigned char* b, float step)
     SiteInputs& in = g_inputs;
     in = {};
     in.step = step;
+    Host_ExpectFaultsBegin();
     __try {
         BYTE* world = g_exeBase + 0x9D4F10;
         in.ddc = *(float*)(b + 0xDDC);
@@ -1266,7 +1267,7 @@ void Determinism_NoteSiteInputs(unsigned char* b, float step)
         in.flags = (b[0x879] ? 1 : 0) | (b[0xEA8] ? 2 : 0) | (b[0x608] ? 4 : 0) | (b[0x609] ? 8 : 0) |
                    (b[0x115A] ? 16 : 0) | (world[0x1004] ? 32 : 0) | (world[9] ? 64 : 0);
         BYTE* node = *(BYTE**)(b + 0x5D0);
-        in.nodeState = node && ((unsigned long long)node >> 32) ? *(int*)(node + 0x12C) : -1;
+        in.nodeState = LooksLikePointer(node) ? *(int*)(node + 0x12C) : -1;
         in.world5bc = *(int*)(world + 0x5BC);
         in.worldCb88 = *(long long*)(world + 0xCB88);
         BYTE* stages = *(BYTE**)(b + SITE_STAGES);
@@ -1275,6 +1276,7 @@ void Determinism_NoteSiteInputs(unsigned char* b, float step)
         g_inputsSite = b;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+    Host_ExpectFaultsEnd();
 }
 
 void Determinism_NoteSitePayment(unsigned char* b, double rubles, double dollars)
@@ -1288,28 +1290,31 @@ void Determinism_NoteSitePayment(unsigned char* b, double rubles, double dollars
     p.tick = g_stepCount + 1; // the tick being run (counted after its Late)
     p.rub = rubles;
     p.usd = dollars;
+    Host_ExpectFaultsBegin();
     __try {
         p.index = *(int*)b;
         // A network's site keeps other words there (a float seen as the pointer).
         BYTE* type = *(BYTE**)(b + 0x318);
-        p.category = type && ((unsigned long long)type >> 32) ? *(int*)(type + 0x360) : -1;
+        p.category = LooksLikePointer(type) ? *(int*)(type + 0x360) : -1;
         p.x = *(float*)(b + 0x350);
         p.z = *(float*)(b + 0x358);
         p.progress = *(float*)(b + 0x604);
         p.stage = *(int*)(b + SITE_STAGE);
         BYTE* stages = *(BYTE**)(b + SITE_STAGES);
-        if (stages && ((unsigned long long)stages >> 32) && p.stage >= 0 && p.stage < 64) {
+        if (LooksLikePointer(stages) && p.stage >= 0 && p.stage < 64) {
             BYTE* stage = stages + (size_t)p.stage * STAGE_BYTES;
             BYTE* it = *(BYTE**)(stage + 8);
             BYTE* end = *(BYTE**)(stage + 0x10);
-            for (; it && ((unsigned long long)it >> 32) && it < end && p.entries < 256; it += STAGE_ENTRY_BYTES, p.entries++) {
+            for (; LooksLikePointer(it) && it < end && p.entries < 256; it += STAGE_ENTRY_BYTES, p.entries++) {
                 p.have += *(float*)(it + 8);
                 p.need += *(float*)(it + 0xc);
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Host_ExpectFaultsEnd();
         return;
     }
+    Host_ExpectFaultsEnd();
     g_sitePayments[g_sitePaymentCount++ % SITE_PAYMENTS] = p;
 }
 

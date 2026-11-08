@@ -86,7 +86,7 @@ static bool ReadSite(BYTE* b, SiteState& s, bool any = false)
         s.stages = s.records && end >= s.records ? (int)((end - s.records) / STAGE_SIZE) : 0;
         BYTE* type = *(BYTE**)(b + TYPE_OFFSET);
         // A network's site keeps other words there (a float seen as the pointer).
-        s.category = type && ((unsigned long long)type >> 32) ? *(int*)(type + CATEGORY_OFFSET) : -1;
+        s.category = LooksLikePointer(type) ? *(int*)(type + CATEGORY_OFFSET) : -1;
         s.x = *(float*)(b + POS_OFFSET);
         s.z = *(float*)(b + POS_OFFSET + 8);
         s.have = s.need = 0;

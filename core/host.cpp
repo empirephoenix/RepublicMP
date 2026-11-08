@@ -105,14 +105,21 @@ static const char* ExceptionName(DWORD code)
 
 static volatile LONG g_inCrashHandler;
 static LONG g_crashesReported;
+static thread_local int t_expectedFaults; // > 0: this thread probes memory under __try
+
+void Host_ExpectFaultsBegin() { t_expectedFaults++; }
+void Host_ExpectFaultsEnd() { if (t_expectedFaults > 0) t_expectedFaults--; }
 
 // Turns "it crashed" into an address. It only watches and never swallows an
-// exception. It runs before any __try, so a fault the mod catches is reported too
-// and counts toward the limit of 8.
+// exception. It runs before any __try, so a fault the mod catches would be
+// reported too and count toward the limit of 8 - except an access violation
+// raised inside Host_ExpectFaultsBegin/End, which the code there catches itself.
 static LONG CALLBACK CrashHandler(PEXCEPTION_POINTERS ep)
 {
     const char* what = ExceptionName(ep->ExceptionRecord->ExceptionCode);
     if (!what) return EXCEPTION_CONTINUE_SEARCH;
+    if (t_expectedFaults > 0 && ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
 
     // Never report from inside a report: a fault raised here would re-enter this
     // and bury the original crash under its own noise.

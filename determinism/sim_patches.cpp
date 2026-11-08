@@ -1390,12 +1390,15 @@ static const unsigned kDrawQueues[] = { 0x997020, 0x996FF0, 0x997050, 0x997080, 
 // A user-mode address, and nothing faults reading it.
 static bool Readable(const BYTE* p)
 {
-    if ((unsigned __int64)p < 0x10000 || (unsigned __int64)p >> 47) return false;
+    if (!LooksLikePointer(p)) return false;
+    Host_ExpectFaultsBegin();
     __try {
         volatile BYTE b = *p;
         (void)b;
+        Host_ExpectFaultsEnd();
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Host_ExpectFaultsEnd();
         return false;
     }
 }

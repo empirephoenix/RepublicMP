@@ -74,6 +74,25 @@ BYTE* AllocNear(BYTE* anchor, SIZE_T size);
 // True when the whole range is committed and readable.
 bool ReadablePtr(const void* p, size_t n);
 
+// Could be a user-mode x64 pointer: past the first 64 KiB and canonical (bits
+// 47..63 clear). Some engine objects keep floats or counters where others keep a
+// pointer (a network's construction site at building +0x318); a "high dword not
+// zero" test lets those through (0x3F800000_3F800000 is two 1.0f), this does not.
+// It says nothing about the memory being mapped - read it under __try still.
+inline bool LooksLikePointer(const void* p)
+{
+    unsigned long long v = (unsigned long long)p;
+    return v >= 0x10000 && !(v >> 47);
+}
+
+// Marks a stretch of code whose access violations are expected and caught by
+// its own __try (a probe of memory that may be gone): the crash report leaves
+// them out, so they neither look like crashes nor use up its 8 reports.
+// Per thread; pair every Begin with an End, also on the __except path.
+// (Plain calls, not an RAII object: MSVC refuses __try next to object unwinding.)
+void Host_ExpectFaultsBegin();
+void Host_ExpectFaultsEnd();
+
 // Reads a NUL-terminated plain-ASCII name out of a pointer that came from a game
 // structure. Refuses anything with a byte outside 32..126, which is what tells a
 // real name from a stale pointer.
