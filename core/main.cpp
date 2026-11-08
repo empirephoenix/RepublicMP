@@ -24,6 +24,9 @@
 #include "../determinism/probe_trace.h"
 #include "../determinism/citizen_trace.h"
 #include "../determinism/probe_watch.h"
+#include "../lockstep/wallets.h"
+#include "../lockstep/citizen_stats.h"
+#include "../lockstep/economy_stats.h"
 #include "../save/save_zip.h"
 #include "../transport/network.h"
 #include "../session/save_sync.h"
@@ -100,6 +103,8 @@ static void BindModules(const ModHost* host)
     CitizenTrace_Bind(host);
     ProbeWatch_Bind(host);
     BuildingSettings_Bind(host);
+    CitizenStats_Bind(host);
+    EconomyStats_Bind(host);
     Republics_Bind(host);
 }
 
@@ -176,6 +181,15 @@ static int InstallHooks()
 
     bool okModSave = ModSave_Install();
     Logf("republicmp  save hook: %d%s", okModSave, okModSave ? "" : " - saves get no " MOD_SAVE_FILE " (views are not kept in them)");
+
+    bool okWallets = Wallets_Install();
+    Logf("republicmp  republics' accounts: %d%s", okWallets, okWallets ? "" : " - some of a tick's money stays split in two");
+
+    bool okCitizenStats = CitizenStats_Install();
+    Logf("republicmp  republics' citizen averages: %d%s", okCitizenStats, okCitizenStats ? "" : " - each player sees the whole map's");
+
+    bool okEconomyStats = EconomyStats_Install();
+    Logf("republicmp  republics' economy statistics: %d%s", okEconomyStats, okEconomyStats ? "" : " - no republic's share is kept");
 
     bool okSounds = RemoteSounds_Install();
     Logf("republicmp  remote command sounds: %d%s", okSounds, okSounds ? "" : " - other players' commands are heard here");

@@ -309,7 +309,31 @@
     <ClCompile Include="lockstep\join_tool.cpp">
       <Filter>lockstep</Filter>
     </ClCompile>
+    <ClCompile Include="lockstep\buoy_tool.cpp">
+      <Filter>lockstep</Filter>
+    </ClCompile>
+    <ClCompile Include="lockstep\go_there.cpp">
+      <Filter>lockstep</Filter>
+    </ClCompile>
+    <ClCompile Include="lockstep\christmas_lights.cpp">
+      <Filter>lockstep</Filter>
+    </ClCompile>
+    <ClCompile Include="lockstep\square_tool.cpp">
+      <Filter>lockstep</Filter>
+    </ClCompile>
+    <ClCompile Include="lockstep\build_modes.cpp">
+      <Filter>lockstep</Filter>
+    </ClCompile>
     <ClCompile Include="lockstep\cancel_tool.cpp">
+      <Filter>lockstep</Filter>
+    </ClCompile>
+    <ClCompile Include="lockstep\citizen_stats.cpp">
+      <Filter>lockstep</Filter>
+    </ClCompile>
+    <ClCompile Include="lockstep\economy_stats.cpp">
+      <Filter>lockstep</Filter>
+    </ClCompile>
+    <ClCompile Include="lockstep\wallets.cpp">
       <Filter>lockstep</Filter>
     </ClCompile>
     <ClCompile Include="lockstep\world_workers.cpp">
@@ -346,6 +370,9 @@
       <Filter>game</Filter>
     </ClCompile>
     <ClCompile Include="determinism\citizen_trace.cpp">
+      <Filter>determinism</Filter>
+    </ClCompile>
+    <ClCompile Include="determinism\waste_trace.cpp">
       <Filter>determinism</Filter>
     </ClCompile>
     <ClCompile Include="game\minimap.cpp">
@@ -641,7 +668,31 @@
     <ClInclude Include="lockstep\join_tool.h">
       <Filter>lockstep</Filter>
     </ClInclude>
+    <ClInclude Include="lockstep\buoy_tool.h">
+      <Filter>lockstep</Filter>
+    </ClInclude>
+    <ClInclude Include="lockstep\go_there.h">
+      <Filter>lockstep</Filter>
+    </ClInclude>
+    <ClInclude Include="lockstep\christmas_lights.h">
+      <Filter>lockstep</Filter>
+    </ClInclude>
+    <ClInclude Include="lockstep\square_tool.h">
+      <Filter>lockstep</Filter>
+    </ClInclude>
+    <ClInclude Include="lockstep\build_modes.h">
+      <Filter>lockstep</Filter>
+    </ClInclude>
     <ClInclude Include="lockstep\cancel_tool.h">
+      <Filter>lockstep</Filter>
+    </ClInclude>
+    <ClInclude Include="lockstep\citizen_stats.h">
+      <Filter>lockstep</Filter>
+    </ClInclude>
+    <ClInclude Include="lockstep\economy_stats.h">
+      <Filter>lockstep</Filter>
+    </ClInclude>
+    <ClInclude Include="lockstep\wallets.h">
       <Filter>lockstep</Filter>
     </ClInclude>
     <ClInclude Include="lockstep\world_workers.h">
@@ -678,6 +729,9 @@
       <Filter>game</Filter>
     </ClInclude>
     <ClInclude Include="determinism\citizen_trace.h">
+      <Filter>determinism</Filter>
+    </ClInclude>
+    <ClInclude Include="determinism\waste_trace.h">
       <Filter>determinism</Filter>
     </ClInclude>
     <ClInclude Include="game\minimap.h">

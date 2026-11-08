@@ -68,6 +68,12 @@ enum LockstepCommandKind {
     LS_CMD_CAR_OWNERS = 39,     // car_owners.cpp: the car building window's "Reset owners" (the building)
     LS_CMD_PLAN_REMOVE = 40,    // plan_remove.cpp: the factory window's "Remove from plan" (factory, entry)
     LS_CMD_CANCEL_PLANS = 41,   // cancel_plans.cpp: "Cancel all plans" (the networks by world field)
+    LS_CMD_SPAWN_BUILDING = 42, // BuildingMsg: a mode's building, placed free of charge (the host's only)
+    LS_CMD_BUOY = 43,           // buoy_tool.cpp: a buoy placed or removed
+    LS_CMD_GO_THERE = 44,       // go_there.cpp: "Go there" (the vehicle, the point)
+    LS_CMD_LIGHTS = 45,         // christmas_lights.cpp: a Christmas light line made, or lines freed
+    LS_CMD_SQUARE = 46,         // square_tool.cpp: a pavement square (type, corners, yaw)
+    LS_CMD_BUILD_MODE = 47,     // build_modes.cpp: a player chose rubles, dollars or realistic
 };
 
 // Money a local action changed on this PC (an interface purchase, a terrain
@@ -110,8 +116,30 @@ void Commands_Submit(int kind, const void* data, size_t size);
 // player may not build on or demolish refuses the whole command, on every PC.
 // Main thread, while a command is made; null: no rule. Called with pos null,
 // it says whether it applies at all.
-typedef bool (*CommandAreaFn)(int player, const float pos[3]);
+// notify: false when the caller only filters (nothing is refused), so the
+// mode shows no notice.
+typedef bool (*CommandAreaFn)(int player, const float pos[3], bool notify);
 void Commands_SetAreaRule(CommandAreaFn fn);
+// A mode's rule on who may change the game's rules (the rules page): false
+// refuses the command on every PC. Main thread, while a command is made;
+// null: everyone may.
+typedef bool (*CommandGlobalFn)(int player);
+void Commands_SetGlobalRule(CommandGlobalFn fn);
+// A mode's rule on the game's check that a border building crosses the border
+// (411270): true lets this one stand where the game said no. corners: its model's
+// box on the ground, in the world. It must depend on nothing but these and the
+// world, as it runs in the preview and in a command on every PC. Inside the game's
+// own call; null: the game's answer stands.
+typedef bool (*CommandBorderFn)(unsigned long long type, const float corners[4][3]);
+void Commands_SetBorderRule(CommandBorderFn fn);
+bool Commands_BorderAllows(unsigned long long type, const float corners[4][3]);
+
+// A mode hears how its LS_CMD_SPAWN_BUILDING ended, on every PC.
+typedef void (*CommandSpawnedFn)(bool placed);
+void Commands_SetSpawned(CommandSpawnedFn fn);
+// Outside the lockstep (a Republics host alone): the same placement, here at once.
+// Main thread. Its save carries the building to whoever joins.
+bool Commands_SpawnBuildingNow(const struct BuildingMsg& m);
 
 // Outside the lockstep (a Republics host alone) the game makes the local
 // player's actions itself: the hooks that would make a command ask here
@@ -122,6 +150,29 @@ void Commands_SetAreaRule(CommandAreaFn fn);
 bool Commands_ChecksHere();
 bool Commands_RefusedHere(int kind, const void* data, size_t size);
 bool Commands_PointRefusedHere(const float pos[3]);
+// While this thread makes a command: false when the area rule keeps the
+// command's player off this building or point (Republics: the other
+// republic's buildings are not theirs to act on). A module checks the
+// buildings its command changes - not those it only reads - before it changes
+// anything, and refuses the command when one is false. Logged; the clicking
+// player's notice is shown. True outside a command or without a rule.
+bool Commands_BuildingInArea(unsigned long long building);
+bool Commands_PointInArea(const float pos[3], bool notify = true);
+// The same for a vehicle (a wagon or trailer by the vehicle at its head), a
+// line (none of its stations outside; border connections count as anyone's)
+// and a station of a line.
+bool Commands_VehicleInArea(unsigned long long vehicle);
+// What decides a vehicle's side: the building it belongs to (0: none), else
+// where it is. False when the vehicle could not be read. Any thread.
+bool Commands_VehicleSide(unsigned long long vehicle, unsigned long long* building, float pos[3]);
+bool Commands_LineInArea(unsigned long long line);
+bool Commands_StationInArea(unsigned long long station);
+// While this thread makes a command: the mode's global rule for its player.
+bool Commands_GlobalAllowed();
+// The player of the command this thread is making (0 the host), or -1 outside
+// one. A mode with a rule active (Republics) keeps some values per player by it.
+int Commands_ApplyingPlayer();
+bool Commands_PerPlayer();
 
 // Changes made outside the hooks, found by comparing with a record (main
 // thread, while commands are captured): what the interface changed between

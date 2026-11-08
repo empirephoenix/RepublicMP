@@ -2,6 +2,7 @@
 // RepublicMP by E3418 and Sohn (juniorsohn); all authors in README.md.
 // See commands.h.
 #include "commands.h"
+#include "wallets.h"
 #include "../determinism/determinism.h"
 #include "../world/networks.h"
 #include "../world/buildings.h"
@@ -10,6 +11,8 @@
 #include "lockstep_net.h"
 #include "remote_sounds.h"
 #include "../game/input_block.h"
+#include "../game/world.h"
+#include "../session/save_sync.h"
 #include "building_settings.h"
 #include "../world/terrain_hook.h"
 #include "purchase.h"
@@ -42,6 +45,12 @@
 #include "call_home.h"
 #include "popups.h"
 #include "presence.h"
+#include "buoy_tool.h"
+#include "go_there.h"
+#include "christmas_lights.h"
+#include "square_tool.h"
+#include "build_modes.h"
+#include "../determinism/waste_trace.h"
 #include "../core/guard.h"
 #include <vector>
 #include <string.h>
@@ -79,6 +88,12 @@ void Commands_Bind(const ModHost* host)
     CallHome_Bind(host);
     Popups_Bind(host);
     Presence_Bind(host);
+    WasteTrace_Bind(host);
+    BuoyTool_Bind(host);
+    GoThere_Bind(host);
+    ChristmasLights_Bind(host);
+    SquareTool_Bind(host);
+    BuildModes_Bind(host);
 }
 
 struct Command {
@@ -100,6 +115,7 @@ static bool ApplyGameRules(const void* data, size_t size);
 static bool g_replaying = false;
 static volatile LONG g_applying = 0;
 static DWORD g_applyThread = 0;
+static int g_applyPlayer = 0; // the player of the command being made
 static volatile bool g_applyRemote = false; // the command being made is another player's
 static volatile LONG64 g_applyEpoch = 0;
 static unsigned g_seq = 0;
@@ -184,12 +200,18 @@ static const char* KindName(int kind)
     case LS_CMD_NET_CANCEL: return "network cancel";
     case LS_CMD_WORKERS: return "workers without an office";
     case LS_CMD_CANCEL_PLANS: return "cancel all plans";
+    case LS_CMD_SPAWN_BUILDING: return "building spawn";
     case LS_CMD_PLAN_REMOVE: return "plan removal";
     case LS_CMD_CAR_OWNERS: return "car owners";
     case LS_CMD_LINE_SPACING: return "line spacing";
     case LS_CMD_CRIME_CANCEL: return "crime cancel";
     case LS_CMD_CALL_HOME: return "call home";
     case LS_CMD_POPUP: return "popup";
+    case LS_CMD_BUOY: return "buoy";
+    case LS_CMD_GO_THERE: return "go there";
+    case LS_CMD_LIGHTS: return "christmas lights";
+    case LS_CMD_SQUARE: return "pavement square";
+    case LS_CMD_BUILD_MODE: return "construction mode";
     }
     return "?";
 }
@@ -236,14 +258,12 @@ static bool g_madeThisFrame = false;
 
 void Commands_SetAreaRule(CommandAreaFn fn) { g_areaRule = fn; }
 
-// The area rule over every point a command builds or demolishes on.
-// shortcut: buildings and networks only. Not checked yet: terrain and brushes,
-// group tools and planned construction (GROUP_TOOL, PLAN_START), directions,
-// hover tools, junctions, links, and the windows' settings and switches - add
-// their points or buildings here when a mode needs them.
+// The area rule over the points a command's message carries. Commands that
+// name buildings check their targets in their module (Commands_BuildingInArea);
+// planned construction keeps to the player's plans in world/networks.
 static bool InArea(int kind, int player, const void* p, size_t n)
 {
-    auto ok = [&](const float* pos) { return g_areaRule(player, pos); };
+    auto ok = [&](const float* pos) { return g_areaRule(player, pos, true); };
     switch (kind) {
     case LS_CMD_PLACE:
     case LS_CMD_DEMOLISH:
@@ -278,13 +298,90 @@ static bool InArea(int kind, int player, const void* p, size_t n)
             if (h.hover.edgeKind && (!ok(h.hover.edgeA) || !ok(h.hover.edgeB))) return false;
         }
         break;
+    case LS_CMD_NET_CANCEL:
+        if (n == sizeof(CancelMsg)) {
+            const CancelMsg& m = *(const CancelMsg*)p;
+            if (!ok(m.ends[0]) || !ok(m.ends[1])) return false;
+        }
+        break;
+    case LS_CMD_DIRECTION:
+        if (n == sizeof(NetDirectionMsg)) {
+            const NetPiece& piece = ((const NetDirectionMsg*)p)->piece;
+            if (!ok(piece.segStart) || !ok(piece.segEnd)) return false;
+        }
+        break;
+    case LS_CMD_GROUP_TOOL: // the box (turned by the camera's yaw): its four corners, either turn
+        if (n == sizeof(NetGroupToolMsg)) {
+            const NetGroupToolMsg& m = *(const NetGroupToolMsg*)p;
+            const float* a = &m.box[3]; // the press point
+            const float* b = &m.box[0]; // the moving corner
+            if (!ok(a) || !ok(b) || !ok(m.cursor)) return false;
+            float dx = b[0] - a[0], dz = b[2] - a[2];
+            for (float s : { 1.0f, -1.0f }) {
+                float c = cosf(m.yaw), sn = s * sinf(m.yaw);
+                float u = dx * c + dz * sn, v = -dx * sn + dz * c; // into the box's frame
+                float p1[3] = { a[0] + u * c, a[1], a[2] + u * sn };
+                float p2[3] = { a[0] - v * sn, a[1], a[2] + v * c };
+                if (!ok(p1) || !ok(p2)) return false;
+            }
+        }
+        break;
+    case LS_CMD_TERRAIN: // every edit of the frame
+        if (n % sizeof(LsTerrainEdit) == 0) {
+            const LsTerrainEdit* e = (const LsTerrainEdit*)p;
+            for (size_t i = 0; i < n / sizeof(LsTerrainEdit); i++)
+                if ((e[i].args.hasPos && !ok(e[i].args.pos)) || (e[i].args.hasPos2 && !ok(e[i].args.pos2))) return false;
+        }
+        break;
+    case LS_CMD_BRUSH: // the brush's centre and points on its rim
+        if (n == sizeof(BrushMsg)) {
+            static const float kRim[16][2] = { { 1, 0 }, { 0.9239f, 0.3827f }, { 0.7071f, 0.7071f }, { 0.3827f, 0.9239f },
+                                               { 0, 1 }, { -0.3827f, 0.9239f }, { -0.7071f, 0.7071f }, { -0.9239f, 0.3827f },
+                                               { -1, 0 }, { -0.9239f, -0.3827f }, { -0.7071f, -0.7071f }, { -0.3827f, -0.9239f },
+                                               { 0, -1 }, { 0.3827f, -0.9239f }, { 0.7071f, -0.7071f }, { 0.9239f, -0.3827f } };
+            const BrushSample& s = ((const BrushMsg*)p)->sample;
+            if (!ok(s.cursor)) return false;
+            for (int k = 0; k < 16; k++) {
+                float q[3] = { s.cursor[0] + s.brush * kRim[k][0], s.cursor[1], s.cursor[2] + s.brush * kRim[k][1] };
+                if (!ok(q)) return false;
+            }
+        }
+        break;
+    case LS_CMD_SETTING: // found by its position on every PC, not through world_refs
+        if (n == sizeof(BuildingSettingMsg)) return ok(((const BuildingSettingMsg*)p)->pos);
+        break;
+    case LS_CMD_JOIN:
+        if (n == sizeof(JoinMsg)) return ok(((const JoinMsg*)p)->point);
+        break;
+    case LS_CMD_BUOY:
+        if (n == sizeof(BuoyMsg)) return ok(((const BuoyMsg*)p)->point);
+        break;
+    case LS_CMD_LIGHTS:
+        if (n == sizeof(LightsMsg)) {
+            const LightsMsg& m = *(const LightsMsg*)p;
+            if (m.mode == 0) return ok(m.start) && ok(m.end);
+            for (unsigned i = 0; i < m.count && i < LIGHTS_MAX_REMOVED; i++)
+                if (!ok(m.ends[i]) || !ok(&m.ends[i][3])) return false;
+        }
+        break;
+    case LS_CMD_SQUARE:
+        if (n == sizeof(SquareMsg)) {
+            float corners[4][3];
+            SquareTool_Corners(*(const SquareMsg*)p, corners);
+            for (const float* c : corners)
+                if (!ok(c)) return false;
+        }
+        break;
+    case LS_CMD_HOVER: // a sign, waypoint, rail signal or junction: where the sender clicked
+        if (n == sizeof(HoverMsg)) return ok((const float*)((const HoverMsg*)p)->pick.cursor);
+        break;
     }
     return true;
 }
 
 bool Commands_ChecksHere()
 {
-    return !g_capturing && g_areaRule && g_areaRule(COMMANDS_LOCAL_PLAYER, nullptr);
+    return !g_capturing && g_areaRule && g_areaRule(COMMANDS_LOCAL_PLAYER, nullptr, false);
 }
 
 bool Commands_RefusedHere(int kind, const void* data, size_t size)
@@ -294,7 +391,168 @@ bool Commands_RefusedHere(int kind, const void* data, size_t size)
 
 bool Commands_PointRefusedHere(const float pos[3])
 {
-    return Commands_ChecksHere() && !g_areaRule(COMMANDS_LOCAL_PLAYER, pos);
+    return Commands_ChecksHere() && !g_areaRule(COMMANDS_LOCAL_PLAYER, pos, true);
+}
+
+bool Commands_PointInArea(const float pos[3], bool notify)
+{
+    if (!g_areaRule || g_applying == 0 || GetCurrentThreadId() != g_applyThread) return true;
+    return g_areaRule(g_applyPlayer, pos, notify);
+}
+
+bool Commands_BuildingInArea(unsigned long long building)
+{
+    if (!g_areaRule || !building || g_applying == 0 || GetCurrentThreadId() != g_applyThread) return true;
+    float pos[3];
+    __try {
+        memcpy(pos, (const void*)(building + GAME_BUILDING_POS_OFFSET), sizeof(pos));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return true;
+    }
+    return Commands_PointInArea(pos);
+}
+
+#define VEHICLE_PARENT 0x398     // a wagon's or trailer's head vehicle
+#define VEHICLE_REGISTERED 0x4F8 // the building it is registered at (0 while a depot vehicle is out)
+#define VEHICLE_IN 0x4F0         // the building it is in now
+#define VEHICLE_DEPOT 0x600      // the depot it is on its way to (a realistic purchase waiting at a customs house)
+#define VEHICLE_POS 0xDE0        // float x, y, z
+
+// The building is still in the world's list (world +11b08). Caller wraps in __try.
+static bool BuildingListed(unsigned long long building)
+{
+    BYTE* world = g_exeBase + 0x9D4F10;
+    unsigned long long* it = *(unsigned long long**)(world + 0x11B08);
+    unsigned long long* end = *(unsigned long long**)(world + 0x11B10);
+    if (!it || end < it || end - it > 1000000) return false;
+    for (; it < end; ++it)
+        if (*it == building) return true;
+    return false;
+}
+
+// shortcut: the game keeps no owner of a vehicle, so it counts as on the side of
+// the depot it is going to, the building it is registered at or in, else of
+// where it is; a stored owner would have to be recorded at purchase and saved.
+bool Commands_VehicleSide(unsigned long long vehicle, unsigned long long* building, float pos[3])
+{
+    *building = 0;
+    if (!vehicle) return false;
+    __try {
+        for (int i = 0; i < 16 && *(unsigned long long*)(vehicle + VEHICLE_PARENT); i++)
+            vehicle = *(unsigned long long*)(vehicle + VEHICLE_PARENT);
+        unsigned long long b = *(unsigned long long*)(vehicle + VEHICLE_DEPOT);
+        if (b && !BuildingListed(b)) b = 0; // a depot demolished since: not read
+        if (!b) b = *(unsigned long long*)(vehicle + VEHICLE_REGISTERED);
+        if (!b) b = *(unsigned long long*)(vehicle + VEHICLE_IN);
+        memcpy(pos, (const void*)(vehicle + VEHICLE_POS), sizeof(float) * 3);
+        *building = b;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return true;
+}
+
+bool Commands_VehicleInArea(unsigned long long vehicle)
+{
+    if (!g_areaRule || !vehicle || g_applying == 0 || GetCurrentThreadId() != g_applyThread) return true;
+    unsigned long long building;
+    float pos[3];
+    if (!Commands_VehicleSide(vehicle, &building, pos)) return true;
+    return building ? Commands_BuildingInArea(building) : Commands_PointInArea(pos);
+}
+
+#define LINE_STATIONS 0x210 // a line's stations: begin, end (buildings, or a border connection)
+#define WORLD_BORDER_A 0x11AF8 // world: the western and the Soviet border connection
+#define WORLD_BORDER_B 0x11B00
+
+bool Commands_StationInArea(unsigned long long station)
+{
+    if (!station) return true;
+    __try {
+        BYTE* world = g_exeBase + 0x9D4F10;
+        if (station == *(unsigned long long*)(world + WORLD_BORDER_A) || station == *(unsigned long long*)(world + WORLD_BORDER_B))
+            return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return true;
+    }
+    return Commands_BuildingInArea(station);
+}
+
+bool Commands_LineInArea(unsigned long long line)
+{
+    if (!g_areaRule || !line || g_applying == 0 || GetCurrentThreadId() != g_applyThread) return true;
+    __try {
+        unsigned long long begin = *(unsigned long long*)(line + LINE_STATIONS), end = *(unsigned long long*)(line + LINE_STATIONS + 8);
+        if (!begin || end < begin || (end - begin) / 8 > 4096) return true;
+        for (unsigned long long p = begin; p < end; p += 8)
+            if (!Commands_StationInArea(*(unsigned long long*)p)) return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return true;
+}
+
+bool Commands_PerPlayer()
+{
+    return g_areaRule && g_areaRule(0, nullptr, false);
+}
+
+int Commands_ApplyingPlayer()
+{
+    return g_applying != 0 && GetCurrentThreadId() == g_applyThread ? g_applyPlayer : -1;
+}
+
+static CommandGlobalFn g_globalRule = nullptr;
+
+void Commands_SetGlobalRule(CommandGlobalFn fn) { g_globalRule = fn; }
+
+static CommandBorderFn g_borderRule = nullptr;
+void Commands_SetBorderRule(CommandBorderFn fn) { g_borderRule = fn; }
+bool Commands_BorderAllows(unsigned long long type, const float corners[4][3])
+{
+    return g_borderRule && g_borderRule(type, corners);
+}
+
+static CommandSpawnedFn g_spawned = nullptr;
+void Commands_SetSpawned(CommandSpawnedFn fn) { g_spawned = fn; }
+
+// A building finished at once (BUILDING_PICK_FINISHED), with the game's "no charges"
+// flag on while it is made: nobody pays.
+#define WORLD_FREE_BUILDING 0x578
+#define BORDER_CHECK_OFF_RVA 0xA54BC0
+static bool ApplySpawnBuilding(const BuildingMsg& m)
+{
+    int* free = (int*)(g_exeBase + 0x9D4F10 + WORLD_FREE_BUILDING);
+    int wasFree = *free;
+    double rub = *Rubles(), usd = *Dollars();
+    // A $BORDER_BUILDING goes only on the map's border (2caf91 -> 411270, error 5,
+    // 0x4E1F) unless this byte is set, which also lifts 410d50 while it is.
+    unsigned char* anywhere = g_exeBase + BORDER_CHECK_OFF_RVA;
+    unsigned char wasAnywhere = *anywhere;
+    *free = 1;
+    *anywhere = 1;
+    RemoteSounds_Silence(true);
+    bool ok = Buildings_ApplyPlacementCommand(m);
+    RemoteSounds_Silence(false);
+    *anywhere = wasAnywhere;
+    *free = wasFree;
+    if (*Rubles() != rub || *Dollars() != usd)
+        Logf("republicmp  LOCKSTEP: a spawned building would have cost %.2f rubles %.2f dollars - put back", rub - *Rubles(), usd - *Dollars());
+    *Rubles() = rub;
+    *Dollars() = usd;
+    return ok;
+}
+
+bool Commands_SpawnBuildingNow(const BuildingMsg& m)
+{
+    bool ok = ApplySpawnBuilding(m);
+    if (g_spawned) g_spawned(ok);
+    return ok;
+}
+
+bool Commands_GlobalAllowed()
+{
+    int player = Commands_ApplyingPlayer();
+    return !g_globalRule || player < 0 || g_globalRule(player);
 }
 
 // The module of a command's kind makes it; false: not made.
@@ -325,6 +583,10 @@ static bool ApplyKind(const Command& c)
         break;
     case LS_CMD_DEMOLISH:
         if (n == sizeof(BuildingMsg)) ok = Buildings_ApplyDemolishCommand(*(const BuildingMsg*)p);
+        break;
+    case LS_CMD_SPAWN_BUILDING:
+        if (n == sizeof(BuildingMsg) && c.player == 0) ok = ApplySpawnBuilding(*(const BuildingMsg*)p);
+        if (g_spawned) g_spawned(ok);
         break;
     case LS_CMD_SETTING:
         if (n == sizeof(BuildingSettingMsg)) ok = BuildingSettings_ApplyCommand(*(const BuildingSettingMsg*)p);
@@ -372,7 +634,8 @@ static bool ApplyKind(const Command& c)
         ok = JunctionAccept_ApplyCommand(p, n);
         break;
     case LS_CMD_GAME_RULES:
-        ok = ApplyGameRules(p, n);
+        if (!Commands_GlobalAllowed()) Logf("republicmp  LOCKSTEP:   the game rules are the host's in this mode - not changed");
+        else ok = ApplyGameRules(p, n);
         break;
     case LS_CMD_CARGO_SETTINGS:
         ok = CargoSettings_ApplyCommand(p, n);
@@ -434,6 +697,21 @@ static bool ApplyKind(const Command& c)
     case LS_CMD_POPUP:
         ok = Popups_ApplyCommand(p, n);
         break;
+    case LS_CMD_BUOY:
+        ok = BuoyTool_ApplyCommand(p, n);
+        break;
+    case LS_CMD_GO_THERE:
+        ok = GoThere_ApplyCommand(p, n);
+        break;
+    case LS_CMD_LIGHTS:
+        ok = ChristmasLights_ApplyCommand(p, n);
+        break;
+    case LS_CMD_SQUARE:
+        ok = SquareTool_ApplyCommand(p, n);
+        break;
+    case LS_CMD_BUILD_MODE:
+        ok = BuildModes_ApplyCommand(c.player, p, n);
+        break;
     }
     return ok;
 }
@@ -454,15 +732,19 @@ static void Apply(const Command& c)
     unsigned recipeLoad = Determinism_WorldLoads();
     bool ok = false;
     g_applyThread = GetCurrentThreadId();
+    g_applyPlayer = c.player;
     g_applyRemote = c.player != LockstepNet_SelfNumber();
     if (g_applyRemote) RemoteSounds_CommandBegin();
     InterlockedIncrement(&g_applying);
     InterlockedIncrement64(&g_applyEpoch);
+    Wallets_CommandBegin(c.player);
+    BuildModes_CommandBegin(c.player);
     double rubBefore = *Rubles(), usdBefore = *Dollars();
     InputBlock_BeginNeutral();
     // A drag the local player has under way would share the tool manager with
     // the replay and change what it builds on this PC only: it is cancelled.
-    if (c.kind == LS_CMD_SEGMENT || c.kind == LS_CMD_UPGRADE || c.kind == LS_CMD_NET_DEMOLISH || c.kind == LS_CMD_PLACE)
+    if (c.kind == LS_CMD_SEGMENT || c.kind == LS_CMD_UPGRADE || c.kind == LS_CMD_NET_DEMOLISH || c.kind == LS_CMD_PLACE ||
+        c.kind == LS_CMD_SQUARE)
         Networks_CancelLocalDrag();
     // This PC's open menus or a window under its cursor (+fbc/+fbe/+fc3) make
     // the tools return at once: a command is made with them closed, as the
@@ -488,6 +770,8 @@ static void Apply(const Command& c)
     g_madeThisFrame = true;
     // What the command paid or got: compared between the PCs' logs when the money differs.
     double paidRub = *Rubles() - rubBefore, paidUsd = *Dollars() - usdBefore;
+    Wallets_CommandEnd();
+    BuildModes_CommandEnd();
     char money[96] = "";
     if (paidRub != 0.0 || paidUsd != 0.0)
         sprintf_s(money, " (money %+.4f rubles %+.4f dollars)", paidRub, paidUsd);
@@ -608,7 +892,7 @@ static void TakeMoney(double rub, double usd, const char* where)
 // the build menu names; the carried route tools (route_tools.cpp) by full name.
 static const char* const kCarriedTools[] = { "vehicle_addstop", "line_addstop", "line_addstop_copy", "line_addstop_copy2",
                                               "vehicle_godepo", "vehicle_godepo_batch",
-                                              // the second-road drags (a road sync category; their removal stays put away)
+                                              // the second-road drags (a road sync category; second_road_cancel stays put away)
                                               "second_road_airplane", "second_road_basicroad", "second_road_l2",
                                               "second_road_l3", "second_road_l4" };
 // Copying the weights and the fire station's dispatch are carried by
@@ -640,7 +924,16 @@ static void PutAwayUncarriedTool()
     if ((strcmp(name, "building_copyweights") == 0 || strcmp(name, "firestation_addfire") == 0) && LinkTools_PickReady())
         return; // link_tools.cpp
     if (strcmp(name, "join_hub_all") == 0 && JoinTool_Ready()) return; // join_tool.cpp
-    if (strcmp(name, "vehicle_tovehicle") == 0) return; // its click is a game call (game_calls.cpp)
+    if (strcmp(name, "vehicle_tovehicle") == 0 || strcmp(name, "vehicle_replace") == 0) return; // their clicks are game calls (game_calls.cpp)
+    if (strncmp(name, "worker_relocate", 15) == 0 && LinkTools_RelocateReady()) return; // link_tools.cpp
+    if ((strcmp(name, "vehicle_replace_auto") == 0 || strcmp(name, "vehicle_addstop_copy") == 0 ||
+         strcmp(name, "vehicle_sendconstruction") == 0) && LinkTools_VehicleReady())
+        return; // link_tools.cpp
+    if (strncmp(name, "bojka", 5) == 0 && BuoyTool_Ready()) return; // buoy_tool.cpp
+    if (strcmp(name, "terrain_go_there") == 0 && GoThere_Ready()) return; // go_there.cpp
+    if (strncmp(name, "christmas_", 10) == 0 && ChristmasLights_Ready()) return; // christmas_lights.cpp
+    size_t nameLength = strlen(name);
+    if (nameLength > 7 && strcmp(name + nameLength - 7, "_square") == 0 && SquareTool_Ready()) return; // square_tool.cpp
     bool trees = false;
     for (const char* prefix : kTreeTools) trees |= strncmp(name, prefix, strlen(prefix)) == 0;
     if ((trees && !BrushTools_Ready(3)) || (strcmp(name, "terrain_demolish_trees") == 0 && !BrushTools_Ready(1))) {
@@ -703,9 +996,12 @@ void Commands_GuardSettings()
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return;
     }
+    // The reload popup accepted: not this PC's own save and reload, but the page's rules as a
+    // command; applying them, the host re-syncs everyone (ApplyGameRules).
+    if (reload) Commands_CaptureGameRules();
     if ((reload || cheats) && s_logged < 8) {
         ++s_logged;
-        Logf("republicmp  LOCKSTEP: %s", reload ? "the game's save and reload after a critical rule is not made in a session"
+        Logf("republicmp  LOCKSTEP: %s", reload ? "a rule that needs a reload: made as a command, then a re-sync of everyone"
                                                 : "cheats stay off in a session");
     }
 }
@@ -715,14 +1011,22 @@ void Commands_CaptureGameRules()
 {
     LsGameRules m = {};
     BYTE* world = g_exeBase + 0x9D4F10;
+    bool changed = false;
     __try {
-        for (size_t i = 0; i < sizeof(kGameRules) / sizeof(kGameRules[0]); i++)
+        for (size_t i = 0; i < sizeof(kGameRules) / sizeof(kGameRules[0]); i++) {
             memcpy(m.copy[i], world + kGameRules[i].copy, kGameRules[i].bytes);
+            if (memcmp(world + kGameRules[i].copy, world + kGameRules[i].rule, kGameRules[i].bytes) == 0) continue;
+            changed = true;
+            unsigned from = 0, to = 0;
+            memcpy(&from, world + kGameRules[i].rule, kGameRules[i].bytes);
+            memcpy(&to, world + kGameRules[i].copy, kGameRules[i].bytes);
+            Logf("republicmp  LOCKSTEP:   rule +0x%X changes from %u to %u", kGameRules[i].rule, from, to);
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         Logf("republicmp  LOCKSTEP: the game rules could not be read - not changed");
         return;
     }
-    Commands_Submit(LS_CMD_GAME_RULES, &m, sizeof(m));
+    if (changed) Commands_Submit(LS_CMD_GAME_RULES, &m, sizeof(m)); // the page closed with nothing changed: nothing to make
 }
 
 static bool ApplyGameRules(const void* data, size_t size)
@@ -730,20 +1034,41 @@ static bool ApplyGameRules(const void* data, size_t size)
     if (size != sizeof(LsGameRules)) return false;
     const LsGameRules& m = *(const LsGameRules*)data;
     BYTE* world = g_exeBase + 0x9D4F10;
+    bool critical = false;
     __try {
+        // The page's gate (336e50, 337450, 7fe6d0): energy, water, waste on or off, seasons,
+        // pollution and day/night take effect only through a save and a reload.
+        auto copy = [&](int i) { int v = 0; memcpy(&v, m.copy[i], 4); return v; };
+        auto live = [&](unsigned at) { return *(int*)(world + at); };
+        critical = live(0x5B0) != copy(0) || live(0x5B4) != copy(1) || live(0x5C0) != copy(4) ||
+                   live(0x5D4) != copy(9) || live(0x5C4) != copy(5) ||
+                   (live(0x5B8) != copy(2) && (live(0x5B8) == 0 || copy(2) == 0));
         for (size_t i = 0; i < sizeof(kGameRules) / sizeof(kGameRules[0]); i++)
             memcpy(world + kGameRules[i].copy, m.copy[i], kGameRules[i].bytes);
         ((void (*)(void*))(g_exeBase + GAME_RULES_APPLY_RVA))(world);
         *(unsigned*)(world + RELOAD_FLAGS_OFFSET) = 0;
-        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+    // Every PC has the new rules; the host saves them and everyone loads that save, as the
+    // game's own reload would (the load rebuilds every building's connections).
+    if (critical) {
+        Logf("republicmp  LOCKSTEP:   a rule that needs a reload changed - %s", SaveSync_IsHostRole() ? "re-syncing everyone" : "the host re-syncs");
+        // shortcut: the game saves and reloads at once; here a tick or two may still run (the same
+        // on every PC) before the host's pause stops them, with nothing rebuilt yet.
+        bool paused = true;
+        int speed = 0;
+        Determinism_SessionSpeed(&paused, &speed);
+        if (SaveSync_IsHostRole() && !paused) Determinism_RequestPauseToggle();
+        SaveSync_RequestResync();
+    }
+    return true;
 }
 
 void Commands_Collect()
 {
     WorldWorkers_Collect(); // also releases the session's value outside a session
+    BuildModes_Collect();
     if (!g_capturing) return;
     Commands_GuardSettings();
     PutAwayUncarriedTool();

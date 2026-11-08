@@ -3,6 +3,8 @@
 // See sim_patches.h.
 #include "sim_patches.h"
 #include "../lockstep/commands.h"
+#include "../lockstep/wallets.h"
+#include "../lockstep/build_modes.h"
 #include "../world/local_builds.h"
 #include "../lockstep/purchase.h"
 #include "../lockstep/route_tools.h"
@@ -15,6 +17,11 @@
 #include "../lockstep/research.h"
 #include "../lockstep/hover_tools.h"
 #include "../lockstep/join_tool.h"
+#include "../lockstep/buoy_tool.h"
+#include "../lockstep/go_there.h"
+#include "../lockstep/christmas_lights.h"
+#include "../lockstep/square_tool.h"
+#include "waste_trace.h"
 #include "../lockstep/cargo_settings.h"
 #include "../lockstep/source_slots.h"
 #include "../lockstep/link_tools.h"
@@ -800,6 +807,8 @@ static void ToolEnter()
     if (!g_toolActed) return;
     Determinism_ToolScopeBegin();
     PrivateViewIn(g_toolKept);
+    Wallets_SimEnd(); // the tool acts for this PC's player, with this player's money
+    BuildModes_SimEnd();
     Commands_RecordMoney(); // the tick's own charges are not the tool's
     Commands_LateBegin();
 }
@@ -809,6 +818,8 @@ static void ToolLeave()
     if (!g_toolActed) return;
     g_toolActed = false;
     Commands_LateEnd();
+    Wallets_SimBegin();
+    BuildModes_SimBegin();
     PrivateViewOut(g_toolKept);
     Determinism_ToolScopeEnd();
 }
@@ -917,6 +928,12 @@ static bool InstallToolStubs()
                                   : kToolCalls[i][1] == 0x2B78B0 ? (unsigned __int64)&LinkTools_Distribution
                                   : kToolCalls[i][1] == 0x1D48A0 ? (unsigned __int64)&LinkTools_Fire
                                   : kToolCalls[i][1] == 0x1D71C0 ? (unsigned __int64)&LinkTools_Weights
+                                  : kToolCalls[i][1] == 0x2B8CE0 ? (unsigned __int64)&LinkTools_Relocate
+                                  : kToolCalls[i][1] == 0x2B4680 ? (unsigned __int64)&LinkTools_AutoReplace
+                                  : kToolCalls[i][1] == 0x2B18C0 ? (unsigned __int64)&LinkTools_CopyStops
+                                  : kToolCalls[i][1] == 0x1D88A0 ? (unsigned __int64)&LinkTools_SendConstruction
+                                  : kToolCalls[i][1] == 0x3C85B0 ? (unsigned __int64)&BuoyTool_Run
+                                  : kToolCalls[i][1] == 0x3CA560 ? (unsigned __int64)&GoThere_Run
                                                                  : (unsigned __int64)(g_exeBase + kToolCalls[i][1]);
         p = EmitImm(p, 0x49, 0xBB, target); // mov r11, target
         p = EmitImm(p, 0x49, 0xBA, (unsigned __int64)common);                        // mov r10, common
@@ -1344,11 +1361,157 @@ static U64 DetDepotMark(U64 w, U64 depot, U64 a3, U64 a4, U64 a5)
     return RouteTools_DepotMark(w, depot, a3, a4, a5, (U64)(ret + 1), *ret);
 }
 
-// The link tools' mark 40bd60 (2b75e9 station, 2b8480 distribution, 1d4d35 fire, 1d74c4 weights; lockstep/link_tools).
+// The link tools' mark 40bd60 (2b75e9 station, 2b8480 distribution, 1d4d35 fire, 1d74c4 weights, 2b9263 and
+// 2b9065 relocation, 2b49df auto-replacement, 2b2152 copied stops, 1d9188, 1d8ea6 and 1d8ecc construction vehicles; lockstep/link_tools).
 static U64 DetLinkMark(U64 w, U64 target, U64 a3, U64 refused, U64 a5)
 {
     return LinkTools_Mark(w, target, a3, refused, a5);
 }
+
+// The draw queues (by SoylentGreed's render handoff notes). The worker pass fills
+// the back queues, Late's 5858f0 (at 31767f) copies them to the front ones, back + 24,
+// and the render thread draws those. An entry holds a mesh it does not own (+c0, 0xe0
+// bytes each) and a mesh can be freed before the copy, on a held frame too: a tool's
+// planner start releases its preview's meshes at once, and a paused game goes on
+// drawing. While the freed block is not reused nothing shows; the first building
+// picked after a re-sync loads its model into that memory, and the render thread
+// ended the game in C3D_MATERIAL::SaveOriginalValues (the material +190, read at
+// 58c774) or in the mesh's draw (its +58, a C3D_MESH export reached from 58789d).
+// Right after the copy, with the render thread finished, the front queues are checked:
+// an entry whose mesh does not read as one is left out of this frame's drawing.
+// A freed mesh that still reads as one is not found by this.
+#define QUEUE_COPY_RVA 0x5858F0
+#define DRAW_ENTRY_BYTES 0xE0
+#define NODE_POSITION_IMPORT 0x86C7B8
+typedef U64 (*QueueCopyFn)(U64 a1, U64 flag, U64 a3, U64 a4);
+typedef float* (*NodePositionFn)(void* node, float* out);
+static const unsigned kDrawQueues[] = { 0x997020, 0x996FF0, 0x997050, 0x997080, 0x9970B0, 0x9970E0, 0x997110, 0x9974D0, 0x997500 };
+
+// A user-mode address, and nothing faults reading it.
+static bool Readable(const BYTE* p)
+{
+    if ((unsigned __int64)p < 0x10000 || (unsigned __int64)p >> 47) return false;
+    __try {
+        volatile BYTE b = *p;
+        (void)b;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Only the network queue 996ff0 takes a coloured entry's material; the others may hold meshes without one.
+static bool DrawEntryGood(unsigned queue, const BYTE* entry)
+{
+    const BYTE* mesh = *(const BYTE**)(entry + 0xC0);
+    if (!Readable(mesh) || !Readable(mesh + 0x198)) return false;
+    const BYTE* parts = *(const BYTE**)(mesh + 0x58);
+    if (parts && !Readable(parts)) return false;
+    if (queue == 0x996FF0 && *(int*)(entry + 0xCC) >= 0 && !Readable(*(const BYTE**)(mesh + 0x190))) return false;
+    return true;
+}
+
+static void CheckDrawQueues()
+{
+    static int s_logged = 0;
+    __try {
+        for (unsigned queue : kDrawQueues) {
+            BYTE** list = (BYTE**)(g_exeBase + queue);
+            BYTE* at = list[0];
+            while (at && at + DRAW_ENTRY_BYTES <= list[1]) {
+                if (DrawEntryGood(queue, at)) {
+                    at += DRAW_ENTRY_BYTES;
+                    continue;
+                }
+                if (s_logged < 16) {
+                    ++s_logged;
+                    float pos[3] = {};
+                    (*(NodePositionFn*)(g_exeBase + NODE_POSITION_IMPORT))(at, pos);
+                    const char* tool = *(const char**)(g_exeBase + 0x9D4F10 + 0xD428);
+                    Logf("republicmp  SIM_PATCHES: draw queue 0x%X: a piece at (%.1f,%.1f,%.1f) has no usable mesh (mesh %p, colour %d, tool [%s]) - not drawn",
+                         queue, pos[0], pos[1], pos[2], *(void**)(at + 0xC0), *(int*)(at + 0xCC), tool ? tool : "");
+                }
+                memmove(at, at + DRAW_ENTRY_BYTES, (size_t)(list[1] - (at + DRAW_ENTRY_BYTES)));
+                list[1] -= DRAW_ENTRY_BYTES;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+static U64 DetQueueCopy(U64 a1, U64 flag, U64 a3, U64 a4)
+{
+    U64 r = ((QueueCopyFn)(g_exeBase + QUEUE_COPY_RVA))(a1, flag, a3, a4);
+    if (g_on && Determinism_IsActive()) CheckDrawQueues();
+    return r;
+}
+
+// The light tool's call in Late (315723) comes on every frame, whatever is selected:
+// only with a light tool does it get the tools' scope of a tick's frame, so that an
+// ordinary tick's Late goes on as it did.
+static void DetLightsTool(U64 manager, float t)
+{
+    const char* tool = *(const char**)(g_exeBase + WORLD_RVA + 0xD428);
+    bool lights = false;
+    __try {
+        lights = tool && strncmp(tool, "christmas_", 10) == 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    if (lights) ToolEnter();
+    ChristmasLights_Tool(manager, t);
+    if (lights) ToolLeave();
+}
+
+static U64 DetFindWaste(U64 w, U64 office, float capacity, U64 list, unsigned char flag, U64* resource, U64 list2)
+{
+    return WasteTrace_FindWaste(w, office, capacity, list, flag, resource, list2);
+}
+
+static U64 DetFindUnload(U64 w, U64 vehicle, U64 resource, float radius, unsigned char flag)
+{
+    return WasteTrace_FindUnload(w, vehicle, resource, radius, flag);
+}
+
+// The game's check that a border building crosses the border (411270, called only
+// from Building_Place at 2caf91): where it says no, the session's mode may still let
+// it stand. The box is the one 411270 reads, on the ground in the world.
+#define BORDER_CHECK_RVA 0x411270
+#define TRANSFORM_COORD_IMPORT 0x86C608 // C3DVec3TransformCoord
+#define TYPE_MESH 0x418
+#define MESH_BOX 0x74 // C3DBBOX: float min[3], max[3]
+static bool DetBorderCheck(U64 world, U64 type, void* matrix)
+{
+    if (((bool (*)(U64, U64, void*))(g_exeBase + BORDER_CHECK_RVA))(world, type, matrix)) return true;
+    typedef void* (*TransformFn)(float* out, const float* in, const void* m);
+    __try {
+        const float* box = (const float*)(*(U64*)(type + TYPE_MESH) + MESH_BOX);
+        TransformFn transform = *(TransformFn*)(g_exeBase + TRANSFORM_COORD_IMPORT);
+        float corners[4][3];
+        for (int i = 0; i < 4; i++) {
+            float local[3] = { box[i & 1 ? 3 : 0], box[1], box[i & 2 ? 5 : 2] };
+            transform(corners[i], local, matrix);
+        }
+        return Commands_BorderAllows(type, corners);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static void DetLightsDraw(U64 manager, float t)
+{
+    ChristmasLights_Draw(manager, t);
+}
+
+static U64 DetSquarePreview(U64 w, U64 type, U64 preview)
+{
+    return SquareTool_Preview(w, type, preview);
+}
+
+static U64 DetSquareFinal(U64 w, U64 type, U64 preview)
+{
+    return SquareTool_Final(w, type, preview);
+}
+
 // The network picks take the node or edge nearest the line through the cursor
 // along this PC's mouse ray (world +f60 minus the camera's position, then
 // C3DVec3Normalize): 3c4850 (the hovered node or edge) and 3d4b40 (the road
@@ -1428,6 +1591,8 @@ static U64 DetSiteUpdate(U64 world, U64 building, float a3, U64 a4)
     bool viewed = g_on && Determinism_IsActive() && b && b[0x115A];
     if (viewed) b[0x115A] = 0;
     SiteWatch_UpdateBefore(b);
+    // A session's construction update comes through here only from the tick's Late.
+    int walletScope = Wallets_BuildingBegin(building); // the site is paid by its own republic
     U64 r;
     if (!g_on || !Determinism_GetMoneyTrace()) {
         r = original(world, building, a3, a4);
@@ -1439,6 +1604,7 @@ static U64 DetSiteUpdate(U64 world, U64 building, float a3, U64 a4)
         SiteWatch_UpdateAfter(b);
         Determinism_NoteSitePayment(b, *(double*)(world + 0x588) - rub, *(double*)(world + 0x580) - usd);
     }
+    Wallets_BuildingEnd(walletScope);
     return r;
 }
 
@@ -1479,17 +1645,21 @@ static bool SiteUpdateCallIs()
     return *call == 0xE8 && SITE_UPDATE_CALL + 5 + rel == SITE_UPDATE_RVA;
 }
 
-#define STEP_CALL_COUNT 26
+#define STEP_CALL_COUNT 41
 static const unsigned kStepCalls[STEP_CALL_COUNT] = { 0x30E3AC, 0x30E3B8, 0x30E3C4, 0x30D9DD, 0x30D9E7, 0x30D6BC, 0x30D6C4, 0x3155F4,
                                                       0x6F91DF, 0x6F92C8, 0x6F940E, 0x6FA603, 0x6FA657, 0x7FCAE6, 0x7FCBDC, 0x7FCD00,
                                                       0x2B2800, 0x2B4B03, 0x2B505C, 0x2B3790, 0x2B75E9, 0x2B8480,
-                                                      0x1D4D35, 0x1D74C4, 0x3DD999, 0xAD26 };
+                                                      0x1D4D35, 0x1D74C4, 0x3DD999, 0xAD26,
+                                                      0x2B9263, 0x2B9065, 0x2B49DF, 0x2B2152, 0x1D9188, 0x1D8EA6, 0x1D8ECC,
+                                                      0x315749, 0x3CFF11, 0x3CFF38, 0x31767F, 0x315723, 0x1C5413, 0x1C5251, 0x2CAF91 };
 static const unsigned kStepTargets[STEP_CALL_COUNT] = { 0x547EF0, 0x547EF0, 0x547EF0, 0x333BD0, 0x5CFEA0, 0x12FD80, 0x12EC40, 0x40ECE0,
                                                         0x1A48C0, 0x1A48C0, 0x1A48C0, 0x1A48C0, 0x1A48C0, 0x1A48C0, 0x1A48C0, 0x1A48C0,
                                                         0x2B5120, 0x2B5120, 0x40CDE0, 0x40BD60, 0x40BD60, 0x40BD60,
-                                                        0x40BD60, 0x40BD60, 0x2DC470, 0x2DC470 };
+                                                        0x40BD60, 0x40BD60, 0x2DC470, 0x2DC470,
+                                                        0x40BD60, 0x40BD60, 0x40BD60, 0x40BD60, 0x40BD60, 0x40BD60, 0x40BD60,
+                                                        0xEBF00, 0x3CE6C0, 0x3CE6C0, 0x5858F0, 0xEA950, 0x19E330, 0x19E750, 0x411270 };
 static const int kStepSlots[STEP_CALL_COUNT] = { 6, 6, 6, 7, 8, 9, 10, 11, 12, 12, 12, 12, 12, 12, 12, 12, 15, 16, 17, 18, 21, 21,
-                                                 21, 21, 22, 22 }; // relay slot of each site
+                                                 21, 21, 22, 22, 21, 21, 21, 21, 21, 21, 21, 24, 25, 26, 27, 28, 29, 30, 31 }; // relay slot of each site
 static bool VerifyStepCalls()
 {
     for (int i = 0; i < STEP_CALL_COUNT; i++) {
@@ -1507,7 +1677,7 @@ static bool VerifyStepCalls()
 
 // A relay page near the exe: one `jmp [rip+0]` per target, 16 bytes apart.
 static BYTE* g_relay = nullptr;
-#define RELAY_SLOTS 24
+#define RELAY_SLOTS 32
 
 static bool CallTo(unsigned int site, BYTE* target, unsigned char out[5])
 {
@@ -1519,8 +1689,27 @@ static bool CallTo(unsigned int site, BYTE* target, unsigned char out[5])
     return true;
 }
 
+// A load turns zoll_sahy, zoll_siatre and zoll_milhost (and their MIRRORZ_) into
+// DLC3_customs_* when DLC3 is owned and the state at 9d5c80 is 3..6: the engine's list
+// of models (its Import, last argument from 758f) and each building's type (1f173b).
+// That state is not the same on a PC's first load and later ones, so PCs differed,
+// and a customs house spawned on the line lost its house. These types stay what they
+// are, from the game's start: a world may be loaded before a session begins.
+static void KeepCustomsTypes()
+{
+    static const unsigned char engineWas[2] = { 0x77, 0x0f }, engineNow[2] = { 0xeb, 0x0f };
+    static const unsigned char loadWas[6] = { 0x0f, 0x87, 0x83, 0x01, 0x00, 0x00 }, loadNow[6] = { 0x90, 0xe9, 0x83, 0x01, 0x00, 0x00 };
+    if (memcmp(g_exeBase + 0x758F, engineWas, 2) != 0 || memcmp(g_exeBase + 0x1F173B, loadWas, 6) != 0) {
+        Logf("republicmp  SIM_PATCHES: unexpected bytes at the customs types' swap - left as it is");
+        return;
+    }
+    Write(g_exeBase + 0x758F, engineNow, 2);
+    Write(g_exeBase + 0x1F173B, loadNow, 6);
+}
+
 bool SimPatches_Install()
 {
+    KeepCustomsTypes();
     bool officeGuard = OfficeGuard_Install();
     bool late = InstallInlineHook(g_exeBase + LATE_RVA, (void*)&HookedLate, (void**)&o_late,
                                   kLateExpect, sizeof(kLateExpect), "republicmp late body");
@@ -1544,7 +1733,9 @@ bool SimPatches_Install()
                               (void*)&DetBuildingLinks, (void*)&DetConnectionChecks, (void*)&DetGroundPaint, (void*)&DetDisplayCost,
                               (void*)&DetPlacePress, (void*)&DetBuyPress, (void*)&DetStopPickVehicle, (void*)&DetStopPickLine,
                               (void*)&DetLineMark, (void*)&DetDepotMark, (void*)&DetPickRay, (void*)&DetSiteUpdate,
-                              (void*)&DetLinkMark, (void*)&DetSiteDraw, (void*)&DetCursorPick };
+                              (void*)&DetLinkMark, (void*)&DetSiteDraw, (void*)&DetCursorPick,
+                              (void*)&DetLightsDraw, (void*)&DetSquarePreview, (void*)&DetSquareFinal, (void*)&DetQueueCopy,
+                              (void*)&DetLightsTool, (void*)&DetFindWaste, (void*)&DetFindUnload, (void*)&DetBorderCheck };
         for (int i = 0; i < RELAY_SLOTS; i++) {
             BYTE* r = g_relay + i * 16;
             r[0] = 0xff; r[1] = 0x25; r[2] = r[3] = r[4] = r[5] = 0;

@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
+
+The mod no longer needs a loader: it starts through its own `xinput9_1_0.dll`.
+Almost every tool that was put away now works in a session, ships, planes and
+helicopters can be bought with realistic construction, each player chooses rubles,
+dollars or realistic for themselves, and the Republics mode has its own money, a
+balanced border and customs houses on it. Protocol 83 - every player needs this
+build (the build check refuses another DLL).
+
+**Installing**
 
 - **New: no mod loader needed** - the mod now starts through its own proxy,
   `xinput9_1_0.dll`, which sits next to `RepublicMP.dll` in the game's folder,
@@ -10,18 +19,177 @@
   `RepublicMP\RepublicMP.profile.ini`, in the game's folder. The nick and the
   settings start from the defaults once, unless the old file is moved there.
   `imgui.ini` moved to the same folder by itself.
+
+**Tools and purchases**
+
+- **New: the tools that were put away work in a session** - each acts on every
+  PC now, as a command: the relocation button of a residential building
+  (workers, educated workers, inmates), buoys, Christmas lights, "Go there",
+  replacing a vehicle by picking, auto-replacement by picking, copying a
+  vehicle's stops, sending construction vehicles, and pavement and water
+  squares. A square shows no preview while it is dragged in a session and
+  appears on release. Only `second_road_cancel` stays put away: the bulldozer
+  removes those pieces. Thanks to SoylentGreed's research.
+- **Fix: buying ships, planes and helicopters with realistic construction** -
+  the purchase was refused without a word: no money taken, no vehicle. They now
+  arrive from the map's edge on every PC.
+- **Each player chooses rubles, dollars or realistic for themselves** - one
+  player's click in the small build window changed it for everyone. Each
+  player's choice now stays theirs and pays for what they build. A re-sync
+  gives everyone the mode in the host's save.
+- **Fix: removing a stop in the vehicle window** - the button took the stop off
+  the clicking PC only, so that vehicle's route differed on the other PCs and
+  the games parted later. It is a command now.
+
+**Fixes**
+
+- **Fix: a crash after a re-sync when a building is picked up** - the draw queues
+  kept meshes that were already freed. An entry whose mesh does not read as one is
+  now left out of the frame's drawing, and the log says where it is.
 - **Fix: "citizens" desyncs around construction sites** - the game placed a
   site's worker at a point read from before the start of the piece's points
   on some stages, which is whatever the memory held on that PC. The worker now
-  stands at the piece's first point. Protocol 59 - every player needs this
-  build.
+  stands at the piece's first point.
+- **Fix: commands lost after a re-sync** - a re-sync that cut off a command on its
+  way (terrain and brush strokes above all) left it waiting, and it entered the
+  next session with its old tick. A player then made none of the host's commands
+  until that tick came, and the games differed within seconds.
 - **Fix: a player's view after a re-sync** - every player got the host's view
   back: the game had already set the camera from the save when RepublicMP read
   "the view before the load". Each PC now keeps what it last showed, in the
   same world.
-- **Fix: removing a stop in the vehicle window** - the button took the stop off
-  the clicking PC only, so that vehicle's route differed on the other PCs and
-  the games parted later. It is a command now.
+- **Game rules that need a reload, and the waste rule** - energy, water,
+  waste on or off, seasons, pollution and day/night take effect only after
+  the game saves and reloads, which a session never did: such a change was
+  dropped on every PC. The rules are now made as a command on every PC and
+  the host then re-syncs everyone, so all load the same save with them.
+  Waste management raised to "waste + demolition" resets every construction
+  site's materials; that ran on the clicking PC only and is now made on
+  every PC.
+- **A key pressed during a replayed segment** - the network tools step their
+  path index on a key press read straight from the keyboard; a segment
+  command made while this PC's player pressed it could take another path
+  there. The key reads as not pressed while the command is made.
+
+**Hosting and desync reports**
+
+- **New: a host's option to ignore tiny money differences** - the host compares
+  each PC's rubles and dollars by their exact bits, so a difference in a
+  double's last bits (0.000000001 rubles) is a desync and a re-sync. With
+  "Ignore money differences under 1" in the RepublicMP window (off by default,
+  it can hide a real money drift), money that differs by less than 1 ruble or
+  1 dollar matches; the first such difference in a session is logged once. The
+  day and its progress are always compared exactly.
+- The last game's log stays as `republicmp.previous.log`.
+- **Desync reports** - a desync's money trace covers a whole check interval and
+  shows both republics' accounts per tick. The waste trucks' job searches are in
+  the report (`WASTE_TRACE`): what each answered and read, which jobs it found
+  taken and by which truck, each change of a truck's job, and each waste slot as
+  the search judges it. The log also lists, every 300 ticks, the construction
+  sites paid with money or with a progress below 0.
+- **The waste trucks' jobs are compared too** (`waste trucks' jobs`) - the games'
+  check covered a truck's position and cargo only, so trucks whose jobs had parted
+  showed as a desync a hundred ticks or more later, out of the report's reach. A
+  desync may now be reported sooner than before: it is the same one, caught when
+  it starts.
+
+**Republics**
+
+- **Each republic has its own money** - two accounts instead of one, kept in
+  the save's `republicmp.ini`. A save without them starts each from the save's
+  balances: Equal gives both the same, East vs West mirrors them (the East's
+  rubles are the West's dollars and the other way round). Prices stay the same
+  for both. What a player does is paid from that player's account, a building
+  pays and earns for the half it stands on, a vehicle for the side of its depot
+  or building, a loan is paid by who took it, and a tourist's spending goes to
+  the building's republic. The loan windows show and count your own loans only.
+  What is left without an owner is split in two and logged. A save of a session
+  keeps both accounts when it is loaded and hosted again.
+- **Each republic sees its own citizens** - the top bar's happiness, health and
+  food, the citizens and education panels and the population window averaged
+  every citizen on the map. They now count the player's own half only: a
+  citizen by their home, else by the building or vehicle they are at. The
+  population window's graphs too, from each republic's own history kept in the
+  save (a record from an older save is the whole map's). Still the whole map's:
+  births, deaths, escapes and immigrants, the change since the last record, and
+  everything the simulation reads.
+- **A random, balanced border** - a broken line now, with bends about 2.5 km
+  apart, from the world's seed, the same on every PC and kept in the save. Both
+  halves get the same playable land (water does not count), the line stays 500 m
+  from every customs house, and it is moved until the customs
+  houses and other border buildings (in East vs West: at least one land customs
+  house on the half of its currency, the rest wherever the line goes), then the five resources (45% to 55% is even
+  enough) are shared as evenly as the map allows, counting how many deposits each
+  side has too. Deposits stay
+  whole where they can; a resource with only one is cut in two. The log says how
+  even it came out.
+- **Customs houses on the line** - every 4 km along the border one is spawned free
+  of charge (at least a medium and a big one on a map), its ports across the line,
+  small, medium or big as the world's seed picks, with land 100 m around, level
+  ground and no buildings near. A test for trade between the republics; they trade
+  nothing with the other player yet.
+- **Fix: customs types changing at a load** - with DLC3, loading a world could turn
+  the older customs houses into the DLC3 ones, on some loads and not others, so
+  players could differ. They now stay the type they were built as.
+- **The cancel tools on one's own half only** (#49) - a network's cancel tool
+  (cancel road and the others) removed a piece anywhere, the other
+  republic's too. A piece with an end on the other half is now refused, with
+  the notice on the clicking PC, as the bulldozer is.
+- **The other republic's buildings can be looked at, not used** (#50) - its
+  windows still open, but what a player does there is refused on every PC
+  with the notice: settings, buttons, popups, construction funding,
+  research, purchases in its depots, links and specific sources to its
+  buildings, stops at its stations and roads, vehicles sent to its depots.
+  The join tool, road signs, waypoints, rail signals, junctions, factory
+  connection directions and the group tools act on one's own half only too.
+- **The other republic's vehicles and lines are not yours to run** - their
+  settings, schedules, depot orders and window buttons (sell, release and
+  the others) are refused, and so are edits of a line with a station on the
+  other half. A vehicle counts as on the side of the depot it is heading to,
+  else of the building it is registered at or in (a wagon by its
+  locomotive), else of where it is. Crossroads (their junction window and
+  name) and cities (new, renamed, deleted) stay on one's own half too.
+- **The game rules are the host's, workers are each player's** - the game
+  rules page changes for the host only, with a notice for the player. "Max.
+  workers without CO" is each player's own: a player's construction sites
+  and demolitions take that player's number (a player's number is not saved;
+  a load starts both from the save's).
+- **Plans and terrain on one's own half** - "start planned construction" and
+  "cancel all plans" leave the other republic's plans alone, and the terrain
+  brushes (raise, lower, level, trees, topsoil) stop at the border: a brush
+  that reaches the other half is refused, with the notice.
+- **No shared strip along the border** - the 50 m on each side of the line that
+  were open to both players are gone: a place belongs to one republic, up to the
+  line. Roads and rails now join the republics only through the customs houses on
+  the line, whose ports lie on each side; those houses stay both players'.
+- **No automatic connections into the other republic** - the building tool lays a
+  new building's conveyors, pipes, footpaths, factory connections and fences to the
+  buildings around it by itself; only those on your own side count now. A conveyor
+  had reached from a new building to the other player's, and neither could remove it.
+  An access road that still reaches across is named in the log.
+- **A foreign pipeline and a power connection on the border between the republics**
+  - the game now takes the line for a border for these two, as for its own: they
+  stand across it, placed from your own half. They still trade abroad, with the
+  nearest real border's side; nothing flows between the republics through them yet.
+
+**Known problems**
+
+- **Waste trucks** are still the most common desync: an office's search for a job
+  can answer differently on two PCs with everything it reads equal. The cause is
+  not found yet; the report above is there to find it.
+- A train can drift by a centimetre between PCs (seen once, a cement train).
+- A building's access road can differ in the last bits of its points between PCs.
+  The site's materials then differ a little, and the money parts until a re-sync
+  (a `clock/money` desync). The log's placement line shows the road's ends.
+- Republics: a construction site can be left paying with money with a progress
+  below 0, and never finish; the log lists such sites. An access road the building
+  tool lays can still reach the other republic.
+- The check behind the crash fix above finds a freed mesh only when it no longer
+  reads as one; what frees it is not known yet. A crash in an office window
+  (`SOVIET64.exe+0x7A611B`) was seen once.
+- Not tried on two PCs yet: relocation, buoys, Christmas lights, squares, "Go
+  there", the vehicle pick tools, and buying ships and planes with realistic
+  construction.
 
 ## 0.7.6
 

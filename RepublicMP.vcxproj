@@ -205,7 +205,15 @@
     <ClCompile Include="lockstep\office_selection.cpp" />
     <ClCompile Include="lockstep\new_city.cpp" />
     <ClCompile Include="lockstep\join_tool.cpp" />
+    <ClCompile Include="lockstep\buoy_tool.cpp" />
+    <ClCompile Include="lockstep\go_there.cpp" />
+    <ClCompile Include="lockstep\christmas_lights.cpp" />
+    <ClCompile Include="lockstep\square_tool.cpp" />
+    <ClCompile Include="lockstep\build_modes.cpp" />
     <ClCompile Include="lockstep\cancel_tool.cpp" />
+    <ClCompile Include="lockstep\wallets.cpp" />
+    <ClCompile Include="lockstep\citizen_stats.cpp" />
+    <ClCompile Include="lockstep\economy_stats.cpp" />
     <ClCompile Include="lockstep\world_workers.cpp" />
     <ClCompile Include="lockstep\cancel_plans.cpp" />
     <ClCompile Include="lockstep\plan_remove.cpp" />
@@ -218,6 +226,7 @@
     <ClCompile Include="game\world.cpp" />
     <ClCompile Include="game\camera.cpp" />
     <ClCompile Include="determinism\citizen_trace.cpp" />
+    <ClCompile Include="determinism\waste_trace.cpp" />
     <ClCompile Include="game\minimap.cpp" />
     <ClCompile Include="game\panel2d.cpp" />
     <ClCompile Include="game\border_draw.cpp" />
@@ -303,7 +312,15 @@
     <ClInclude Include="lockstep\office_selection.h" />
     <ClInclude Include="lockstep\new_city.h" />
     <ClInclude Include="lockstep\join_tool.h" />
+    <ClInclude Include="lockstep\buoy_tool.h" />
+    <ClInclude Include="lockstep\go_there.h" />
+    <ClInclude Include="lockstep\christmas_lights.h" />
+    <ClInclude Include="lockstep\square_tool.h" />
+    <ClInclude Include="lockstep\build_modes.h" />
     <ClInclude Include="lockstep\cancel_tool.h" />
+    <ClInclude Include="lockstep\wallets.h" />
+    <ClInclude Include="lockstep\citizen_stats.h" />
+    <ClInclude Include="lockstep\economy_stats.h" />
     <ClInclude Include="lockstep\world_workers.h" />
     <ClInclude Include="lockstep\cancel_plans.h" />
     <ClInclude Include="lockstep\plan_remove.h" />
@@ -316,6 +333,7 @@
     <ClInclude Include="game\world.h" />
     <ClInclude Include="game\camera.h" />
     <ClInclude Include="determinism\citizen_trace.h" />
+    <ClInclude Include="determinism\waste_trace.h" />
     <ClInclude Include="game\minimap.h" />
     <ClInclude Include="game\panel2d.h" />
     <ClInclude Include="game\border_draw.h" />

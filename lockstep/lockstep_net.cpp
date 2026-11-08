@@ -17,10 +17,21 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+static volatile bool g_moneyTolerance = false; // host: money within MONEY_TOLERANCE is the same money
+
 void LockstepNet_Bind(const ModHost* host)
 {
     ModHost_Bind(host);
+    g_moneyTolerance = Profile_GetInt("profile", "money_tolerance", 0) != 0;
 }
+
+void LockstepNet_SetMoneyTolerance(bool on)
+{
+    g_moneyTolerance = on;
+    Profile_SetInt("profile", "money_tolerance", on ? 1 : 0);
+}
+
+bool LockstepNet_GetMoneyTolerance() { return g_moneyTolerance; }
 
 enum LockstepMsgType {
     LS_GRANT = 1, // host -> player: LsGrant
@@ -266,6 +277,7 @@ static void DumpRecords(unsigned long long tick, const char* what)
 static char g_desync[256] = "";
 static char g_lastRefusal[320] = ""; // the host's last accept: why a player was refused
 static unsigned long long g_desyncTick = 0; // the tick of g_desync
+static bool g_moneyDriftLogged = false; // a money difference under the tolerance was logged once
 
 // Player side.
 static std::deque<LsGrant> g_grants;
@@ -513,15 +525,21 @@ static DWORD WINAPI RecvThread(LPVOID param)
     return 0;
 }
 
-static void ResetState()
+// What the last connection brought and nobody handled yet.
+static void DropReceived()
 {
-    InterlockedExchange(&g_commandsReady, 0);
-    EnterCriticalSection(&g_delayLock); // the last session's held messages are dropped
+    EnterCriticalSection(&g_delayLock);
     g_delayed.clear();
     LeaveCriticalSection(&g_delayLock);
     EnterCriticalSection(&g_inLock);
     g_inbox.clear();
     LeaveCriticalSection(&g_inLock);
+}
+
+static void ResetState()
+{
+    InterlockedExchange(&g_commandsReady, 0);
+    DropReceived();
     for (Peer& p : g_peers) {
         p.connected = false;
         p.sock = NET_NO_LINK;
@@ -542,6 +560,7 @@ static void ResetState()
     memset(g_ownHashes, 0, sizeof(g_ownHashes));
     g_desync[0] = 0;
     g_desyncTick = 0;
+    g_moneyDriftLogged = false;
     g_grants.clear();
     g_hostStateKnown = false;
     g_hostState.paused = 1;
@@ -716,6 +735,10 @@ void LockstepNet_Close()
         }
     }
     g_peerSlots = 0;
+    // The polls go on through the next load, before the next connection resets
+    // this: a command left here would enter the new session with its old tick,
+    // and on a player every later command would wait behind it.
+    DropReceived();
 }
 
 const char* LockstepNet_LastRefusal() { return g_lastRefusal; }
@@ -725,6 +748,7 @@ void LockstepNet_ForgetSession()
     g_isHost = false;
     g_desync[0] = 0;
     g_desyncTick = 0;
+    g_moneyDriftLogged = false;
     if (!g_locksReady) return;
     EnterCriticalSection(&g_listLock);
     memset(&g_list, 0, sizeof(g_list));
@@ -764,6 +788,17 @@ unsigned long long LockstepNet_LastMatchedTick()
 // State comparison (host)
 // ---------------------------------------------------------------------------
 
+#define MONEY_TOLERANCE 1.0 // rubles or dollars apart that still count as the same money
+
+// The same bits (also a NaN or inf both PCs have), or within MONEY_TOLERANCE
+// when the host has allowed it.
+static bool MoneyMatches(double a, double b)
+{
+    if (memcmp(&a, &b, sizeof(double)) == 0) return true;
+    double d = a - b;
+    return g_moneyTolerance && d > -MONEY_TOLERANCE && d < MONEY_TOLERANCE;
+}
+
 // After the first difference only that tick is still compared: the log tells
 // which players differ and which match (one PC alone or everyone).
 static void Compare(int index, const LsHash& theirs)
@@ -779,10 +814,21 @@ static void Compare(int index, const LsHash& theirs)
     const StateSummary& a = mine->s;
     const StateSummary& b = theirs.s;
     char what[160] = "";
-    if (a.hashClock != b.hashClock) strcat_s(what, "clock/money ");
+    // The clock exactly; money by its bits, or within MONEY_TOLERANCE when allowed,
+    // so a difference in a double's last bits (0.000000001 rubles) does not split the session.
+    bool moneyOff = !MoneyMatches(a.rub, b.rub) || !MoneyMatches(a.usd, b.usd) || !MoneyMatches(a.rub2, b.rub2) ||
+                    !MoneyMatches(a.usd2, b.usd2);
+    if (a.day != b.day || a.year != b.year || a.dayProgress != b.dayProgress || moneyOff) strcat_s(what, "clock/money ");
+    if (!moneyOff && (a.rub != b.rub || a.usd != b.usd || a.rub2 != b.rub2 || a.usd2 != b.usd2) && !g_moneyDriftLogged) {
+        g_moneyDriftLogged = true;
+        Logf("republicmp  LOCKSTEP:   %s's money differs by %.9g rubles %.9g dollars after tick %llu - under the tolerance, "
+             "money alone is not counted as a desync (logged once a session)", peer.nick, a.rub - b.rub, a.usd - b.usd,
+             theirs.tick);
+    }
     if (a.hashBuildings != b.hashBuildings) strcat_s(what, "buildings ");
     if (a.hashVehicles != b.hashVehicles) strcat_s(what, "vehicles ");
     if (a.hashCitizens != b.hashCitizens) strcat_s(what, "citizens ");
+    if (a.hashJobs != b.hashJobs) strcat_s(what, "waste trucks' jobs ");
     if (g_desync[0] && theirs.tick != g_desyncTick) {
         // Later ticks: the games go on differing, or match again - a
         // difference of that moment only (something one PC alone listed then).

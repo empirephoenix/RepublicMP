@@ -7,10 +7,11 @@ joining players, and from there every game runs the same simulation tick by
 tick (**lockstep**).
 
 A second mode, **Republics** (in development), gives two players a republic
-each on one map cut in two halves of equal playable area; so far each builds on their own half
-only, and money is still shared.
+each on one map cut in two by a broken line the world's seed picks: equal playable area,
+as even a share of border crossings and resources as the map allows; so far each builds on their own half
+only, each has their own money, and each sees their own citizens' averages.
 
-**Status:** alpha, tested with up to four players. Current version: **0.7.6**
+**Status:** alpha, tested with up to four players. Current version: **0.8.0**
 ([changelog](CHANGELOG.md)).
 
 ## Support and community
@@ -55,12 +56,16 @@ Carried as commands:
   (checkboxes, limits, per-stop cargo settings, cargo limits), sending to a
   depot with the pick tool, composing trains in the depot, selling vehicles.
 - **Lines and routes** - creating and deleting lines, the line window's
-  Accept, adding stops, putting vehicles on a line, launching vehicles.
+  Accept, adding stops, putting vehicles on a line, launching vehicles,
+  replacing and auto-replacing a vehicle by picking, copying a vehicle's stops,
+  sending construction vehicles, "Go there".
+- **Other tools** - the relocation button of a residential building, buoys,
+  Christmas lights, pavement and water squares. Rubles, dollars or realistic is
+  each player's own choice.
 
 Not carried yet (tools are put away when selected, or the action acts on one
-PC only): removing decoration paths, worker relocation, buoys, Christmas
-lights, merge tools, "Go there", goods purchases in shops, the office
-window's order popup. Saving in a session saves on every PC at once. While
+PC only): removing decoration paths, merge tools, goods purchases in shops,
+the office window's order popup. Saving in a session saves on every PC at once. While
 the game is paused, what comes into view appears only after the pause.
 
 ## How it works

@@ -9,6 +9,9 @@
 #include "held_frame.h"
 #include "../lockstep/commands.h"
 #include "../lockstep/lockstep_net.h"
+#include "../lockstep/build_modes.h"
+#include "waste_trace.h"
+#include "../lockstep/wallets.h"
 #include "../game/save_load.h"
 #include "../game/weather.h"
 #include "../game/world.h"
@@ -71,6 +74,7 @@ void Determinism_Bind(const ModHost* host)
     HeldFrame_Bind(host);
     Commands_Bind(host);
     LockstepNet_Bind(host);
+    Wallets_Bind(host);
 }
 
 // ---------------------------------------------------------------------------
@@ -900,6 +904,7 @@ static void AfterLoadFiles()
 {
     ModSave_AfterLoad();
     CameraKeep_AfterLoad();
+    Wallets_AfterLoad(g_sessionLoadPending);
 }
 
 static void HookedLoadWorld(void)
@@ -1078,6 +1083,7 @@ void Determinism_EndSession()
     g_sessionRunning = false;
     g_sessionLoadPending = false;
     Commands_SetSession(COMMANDS_OFF);
+    Wallets_SessionEnd();
     Determinism_SetActive(false, 0);
     Logf("republicmp  LOCKSTEP: session ended after %llu ticks", (unsigned long long)g_stepCount);
 }
@@ -1181,12 +1187,16 @@ struct MoneyTick {
     double progress; // construction progress (+0x604) of the sites, summed
     int sites, paid;
     unsigned prices; // PriceHash
+    double accounts[4]; // Republics: half 0 rubles, dollars, half 1 rubles, dollars
+    bool haveAccounts;
+    double sitesRub, sitesUsd; // what the sites paid in this tick
 };
 #define MONEY_TRACE_TICKS 256
-#define MONEY_TRACE_DUMPED 70
+#define MONEY_TRACE_DUMPED 130 // the games are compared every 120 ticks: the tick they parted is in it
 static MoneyTick g_moneyTicks[MONEY_TRACE_TICKS];
 static unsigned long long g_moneyTickCount = 0;
 static bool g_moneyTrace = true;
+static double g_tickSitesRub = 0, g_tickSitesUsd = 0;
 
 // The construction update's inputs besides progress and materials
 // (Determinism_NoteSiteInputs).
@@ -1270,6 +1280,8 @@ void Determinism_NoteSiteInputs(unsigned char* b, float step)
 void Determinism_NoteSitePayment(unsigned char* b, double rubles, double dollars)
 {
     if (!g_moneyTrace || !g_sessionRunning || (rubles == 0 && dollars == 0)) return;
+    g_tickSitesRub += rubles;
+    g_tickSitesUsd += dollars;
     SitePayment p = {};
     if (b == g_inputsSite) p.in = g_inputs;
     g_inputsSite = nullptr;
@@ -1363,9 +1375,13 @@ static void RecordMoneyTick()
             if (*(*it + 0x608) || *(*it + 0x609)) t.paid++;
         }
         t.prices = PriceHash(world);
+        t.haveAccounts = Wallets_Read(&t.accounts[0], &t.accounts[1], &t.accounts[2], &t.accounts[3]);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return;
     }
+    t.sitesRub = g_tickSitesRub;
+    t.sitesUsd = g_tickSitesUsd;
+    g_tickSitesRub = g_tickSitesUsd = 0;
     g_moneyTicks[g_moneyTickCount++ % MONEY_TRACE_TICKS] = t;
 }
 
@@ -1384,6 +1400,11 @@ void Determinism_DumpMoneyTrace(unsigned long long tick)
         double dRub = prev ? t.rub - prev->rub : 0, dUsd = prev ? t.usd - prev->usd : 0;
         Logf("republicmp  MONEY_TRACE: tick %llu rubles %.6f (%+.6f) dollars %.6f (%+.6f), %d site(s) (%d paid), progress %.9g, prices %08X",
              t.tick, t.rub, dRub, t.usd, dUsd, t.sites, t.paid, t.progress, t.prices);
+        // The accounts are alike on every PC, the balances above are each PC's own view:
+        // these lines of the two PCs' logs are the ones to compare.
+        if (t.haveAccounts)
+            Logf("republicmp  MONEY_TRACE: tick %llu accounts half 0 %.9f rubles %.9f dollars, half 1 %.9f rubles %.9f dollars; sites paid %.9f rubles %.9f dollars",
+                 t.tick, t.accounts[0], t.accounts[1], t.accounts[2], t.accounts[3], t.sitesRub, t.sitesUsd);
         prev = &t;
     }
     // What each site paid in the last ticks: the two PCs' lines show which site paid differently.
@@ -1400,6 +1421,7 @@ void Determinism_DumpMoneyTrace(unsigned long long tick)
              in.world5bc, (unsigned long long)in.worldCb88);
     }
     LogPrices();
+    WasteTrace_Dump(tick);
 }
 
 // Session log every 300 ticks: whether time, money and construction move -
@@ -1408,7 +1430,9 @@ void Determinism_DumpMoneyTrace(unsigned long long tick)
 static void LogSessionProgress(const StateSummary& s)
 {
     double progress = 0;
-    int sites = 0, paid = 0, stopped = 0, free = 0;
+    int sites = 0, paid = 0, stopped = 0, free = 0, listed = 0;
+    BYTE* odd[8];
+    float oddProgress[8];
     __try {
         free = *(int*)(g_exeBase + 0x9D4F10 + 0x578); // != 0: nothing is ever charged
         BYTE** it = *(BYTE***)(g_exeBase + 0x9E6A18);
@@ -1420,6 +1444,11 @@ static void LogSessionProgress(const StateSummary& s)
                 sites++;
                 if (*(*it + 0x608) || *(*it + 0x609)) paid++;
                 if (*(*it + 0x879)) stopped++;
+                // Paid with money, or a progress below 0 (a site that pays and never ends).
+                if ((*(*it + 0x608) || *(*it + 0x609) || p < 0.0f) && listed < 8) {
+                    odd[listed] = *it;
+                    oddProgress[listed++] = p;
+                }
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1427,6 +1456,24 @@ static void LogSessionProgress(const StateSummary& s)
     Logf("republicmp  LOCKSTEP: tick %llu day %d/%d %.2f, rubles %.0f dollars %.0f%s, %d construction site(s) (%d paid with money, %d stopped), progress sum %.4f",
          (unsigned long long)g_stepCount, s.day, s.year, s.dayProgress, s.rub, s.usd, free ? " (free building)" : "", sites, paid,
          stopped, progress);
+    for (int i = 0; i < listed; i++) {
+        int id = -1, category = -1, rubles = 0, dollars = 0, stop = 0;
+        float x = 0, z = 0;
+        __try {
+            BYTE* b = odd[i];
+            id = *(int*)b;
+            BYTE* type = *(BYTE**)(b + 0x318);
+            category = type ? *(int*)(type + 0x360) : -1;
+            x = *(float*)(b + 0x350);
+            z = *(float*)(b + 0x358);
+            rubles = *(b + 0x608);
+            dollars = *(b + 0x609);
+            stop = *(b + 0x879);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+        Logf("republicmp  LOCKSTEP:   site #%d category %d at (%.1f,%.1f) progress %.6g, paid rubles %d dollars %d, stopped %d", id,
+             category, x, z, oddProgress[i], rubles, dollars, stop);
+    }
 }
 
 void Determinism_BeforePrepare()
@@ -1589,7 +1636,11 @@ static void HookedSimStep(__int64 world)
     FrameTimingScope timing(FRAME_EARLY);
     SimPatches_BeforeEarly(world);
     g_inEarly = true;
+    Wallets_SimBegin();
+    BuildModes_SimBegin();
     o_simStep(world);
+    BuildModes_SimEnd();
+    Wallets_SimEnd();
     g_inEarly = false;
     SimPatches_AfterEarly();
     SiteWatch_Check("Early", true);
@@ -1612,11 +1663,17 @@ void Determinism_BeforeLate()
     // does: at speed 0 with no time step 159070 treats the game as paused
     // (159234) and skips the building update, so construction never advanced
     // and nothing was charged for it.
-    if (g_frameStep && g_frameEarly) WriteGameSpeed(GameSpeedOf(g_tickSpeed));
+    if (g_frameStep && g_frameEarly) {
+        WriteGameSpeed(GameSpeedOf(g_tickSpeed));
+        Wallets_SimBegin();
+        BuildModes_SimBegin();
+    }
 }
 
 void Determinism_AfterLate()
 {
+    BuildModes_SimEnd();
+    Wallets_SimEnd();
     if (!g_active) return;
     g_framePhase = 6;
     g_inEarly = false;
@@ -1633,7 +1690,10 @@ void Determinism_AfterLate()
                 StateSummary s;
                 if (StateHash_Compute(&s)) {
                     LockstepNet_StateAfter(g_stepCount, s);
-                    if (g_stepCount % (LOCKSTEP_HASH_TICKS * 5) == 0) LogSessionProgress(s);
+                    if (g_stepCount % (LOCKSTEP_HASH_TICKS * 5) == 0) {
+                        LogSessionProgress(s);
+                        Wallets_LogState();
+                    }
                 }
             }
         }
@@ -1836,6 +1896,7 @@ static void CompareRuns()
         if (a.hashBuildings != b.hashBuildings) strcat_s(parts, "buildings ");
         if (a.hashVehicles != b.hashVehicles) strcat_s(parts, "vehicles ");
         if (a.hashCitizens != b.hashCitizens) strcat_s(parts, "citizens ");
+        if (a.hashJobs != b.hashJobs) strcat_s(parts, "waste trucks' jobs ");
         SetProbeStatus("DIFFERENT from step %llu (sample %d/%d): %s- draws %llu/%llu, vehicles %d/%d, citizens %d/%d, "
                        "storage %.1f/%.1f", g_samples[0][i].step, i + 1, n, parts, pa.draws, pb.draws, a.vehicles,
                        b.vehicles, a.citizens, b.citizens, a.storageTotal, b.storageTotal);

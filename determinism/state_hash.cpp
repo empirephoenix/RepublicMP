@@ -2,6 +2,7 @@
 // See state_hash.h.
 #include "state_hash.h"
 #include "../core/profile.h"
+#include "../lockstep/wallets.h"
 #include "determinism.h"
 #include <string.h>
 #include <stdio.h>
@@ -32,6 +33,16 @@
 #define VEH_POS_OFFSET 0xDE0
 #define VEH_TYPE_OFFSET 0x1708   // the vehicle type's record
 #define VEH_TYPE_NAME 0x200      // a type's name
+#define VEH_RECORDS 0x638        // one per stop, 0x198 bytes: the resources it takes at +8
+#define VEH_STOPS 0x680
+#define VEH_STATE 0x698
+#define VEH_PATH 0x6A0
+#define VEH_PATH_AT 0x700
+#define TYPE_CLASS 0x8600
+#define WASTE_CLASS 0x11
+#define RECORD_BYTES 0x198
+#define WORLD_RESOURCES_OFFSET 0xC2B0
+#define RESOURCE_BYTES 0x340
 
 #define CIT_HOME_OFFSET 0x20
 #define CIT_AGE_OFFSET 0xD4
@@ -95,11 +106,42 @@ static void MixEntries(unsigned long long& h, BYTE* vec, double& total)
     }
 }
 
+// A resource by its place in the world's list (pointers differ between PCs).
+static int ResourcePlace(BYTE* w, unsigned long long resource)
+{
+    unsigned long long first = *(unsigned long long*)(w + WORLD_RESOURCES_OFFSET);
+    if (!resource || resource < first || (resource - first) % RESOURCE_BYTES) return -1;
+    return (int)((resource - first) / RESOURCE_BYTES);
+}
+
+// A waste truck's job, what the waste searches read of it (19f5f0). Caller wraps in __try.
+static void MixJob(unsigned long long& h, BYTE* w, BYTE* v)
+{
+    BYTE* type = *(BYTE**)(v + VEH_TYPE_OFFSET);
+    if (!type || *(int*)(type + TYPE_CLASS) != WASTE_CLASS) return;
+    MixInt(h, *(int*)(v + VEH_INDEX_OFFSET));
+    MixInt(h, *(int*)(v + VEH_STATE));
+    MixInt(h, *(int*)(v + VEH_PATH_AT));
+    MixInt(h, (int)Count(v + VEH_PATH, 8));
+    BYTE** stop = *(BYTE***)(v + VEH_STOPS);
+    long long stops = Count(v + VEH_STOPS, 8);
+    for (long long i = 0; i < stops && i < 256; i++) MixInt(h, stop[i] ? *(int*)(stop[i] + BLD_INDEX_OFFSET) : -1);
+    BYTE* record = *(BYTE**)(v + VEH_RECORDS);
+    long long records = Count(v + VEH_RECORDS, RECORD_BYTES);
+    for (long long i = 0; i < records && i < 256; i++) {
+        BYTE* r = record + i * RECORD_BYTES;
+        BYTE* it = *(BYTE**)(r + 8);
+        long long entries = Count(r + 8, 0x10);
+        for (long long k = 0; k < entries && k < 256; k++) MixInt(h, ResourcePlace(w, *(unsigned long long*)(it + k * 0x10)));
+        MixInt(h, -1);
+    }
+}
+
 bool StateHash_Compute(StateSummary* out)
 {
     memset(out, 0, sizeof(*out));
     const unsigned long long seed = 0xcbf29ce484222325ull;
-    out->hashClock = out->hashBuildings = out->hashVehicles = out->hashCitizens = seed;
+    out->hashClock = out->hashBuildings = out->hashVehicles = out->hashCitizens = out->hashJobs = seed;
     BYTE* w = g_exeBase + WORLD_RVA;
     __try {
         out->day = *(int*)(w + WORLD_DAY_OFFSET);
@@ -107,6 +149,10 @@ bool StateHash_Compute(StateSummary* out)
         out->dayProgress = *(float*)(w + WORLD_PROGRESS_OFFSET);
         out->usd = *(double*)(w + WORLD_USD_OFFSET);
         out->rub = *(double*)(w + WORLD_RUB_OFFSET);
+        // In Republics the balances hold this PC's own account: they differ by design.
+        Wallets_Read(&out->rub, &out->usd, &out->rub2, &out->usd2);
+        Mix(out->hashClock, &out->usd2, sizeof(double));
+        Mix(out->hashClock, &out->rub2, sizeof(double));
         MixInt(out->hashClock, out->day);
         MixInt(out->hashClock, out->year);
         MixFloat(out->hashClock, out->dayProgress);
@@ -143,6 +189,7 @@ bool StateHash_Compute(StateSummary* out)
             MixInt(out->hashVehicles, *(int*)(v + VEH_INDEX_OFFSET));
             Mix(out->hashVehicles, v + VEH_POS_OFFSET, 12);
             MixEntries(out->hashVehicles, v + VEH_CARGO_OFFSET, out->cargoTotal);
+            MixJob(out->hashJobs, w, v);
         }
 
         long long nc = Count(w + WORLD_CITIZENS_OFFSET, 8);
@@ -306,6 +353,7 @@ unsigned long long StateHash_All(const StateSummary& s)
     Mix(h, &s.hashBuildings, 8);
     Mix(h, &s.hashVehicles, 8);
     Mix(h, &s.hashCitizens, 8);
+    Mix(h, &s.hashJobs, 8);
     return h;
 }
 

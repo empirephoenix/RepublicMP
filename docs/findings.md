@@ -281,6 +281,33 @@ Inferred unless noted.
 - `0x2DF4D0` / `0x2DF554` draw a ship under construction in a shipyard
   (vehicle type at `b+0x11C8`, progress `b+0xFC0 < 2`), not the building.
 
+### The border check of a border building (1.1.1.9)
+
+`$BORDER_BUILDING` is type `+0xAE0`. In `Building_Place` (2bade0), for both the
+preview and the placement: a type without the flag must not be outside the border
+(410d50, error 5 / 0x48A). With the flag, 2caf91 calls 411270(world, type, matrix),
+its only caller; false gives error 5 / 0x4E1F. 411270 answers true with the byte at
+a54bc0 set or no mesh (type `+0x418`), otherwise when the model's box (mesh `+0x74`,
+C3DBBOX) crosses a segment of the world's border list (`+0xFC50`, 0x48-byte entries,
+doubles at +8 and +0x18). The matrix is the model's to the world; 411270 takes the
+inverse. Then, with the rule at world `+0x14453`, 411640 (distance to the real east
+and west border) picks `pipeline_to_east/west` for category 0x6B and the same for
+0x1F, and every connection point (type `+0x2F8`) must not be outside the real border
+(error 0x4EB3). Types with the flag: the foreign pipeline, the power connections and
+the customs houses.
+
+### A waste truck's job searches (1.1.1.9)
+
+The office's pass 1c4e20 asks 19e330 (waste for an empty truck: the fullest waste slot of
+the office's buildings, by the entries' amount over the slot's size +8c and the
+resource's +2ec) and 19e750 (where a full truck unloads: a path search from the truck,
+in the order of distance). Both skip a building when 19f5f0 says the job is taken: from
+the building's offices +da8, each office's vehicles +c70, a waste truck (type +8600 ==
+0x11) with +698 == 0, first stop +680 the building and, given a resource, that resource
+in its first record's list (+638, 0x198 bytes each, list at +8). The state hash leaves
+those truck fields out. Logs of 2026-11-07: 5 of 9 sessions' first desyncs had these
+searches answer differently with the office's waste equal to the bit (`WASTE_TRACE`).
+
 ## Networks (roads, rails, pipes, power lines...)
 
 Inferred unless noted.
@@ -330,7 +357,25 @@ Inferred, several sites each.
   the map inset by 100. Placement `0x2BADE0` refuses with error 5
   (`editor/error_building_border.png`) at `0x2CAA4C` and `0x2CB15F`; the drag
   tick reaches it through `0x4FA970` and `0x51D160`. A byte at `0xA54BC0`
-  turns the check off (meaning unknown).
+  turns the check off, and the next one too: a `$BORDER_BUILDING` (type `+0xAE0`)
+  must stand on the border, else `0x2CAF91` -> `0x411270` refuses with error 5,
+  `0x4E1F`.
+- **A building finished at once.** World generation places as usual, then sets
+  progress `+0x604` to 1 and calls `0x159070` with step 0.1 (`0x4EE3D8`..`0x4EE3FA`),
+  and does the same for each network piece with a site at edge `+0x138`, starting
+  over after each (`0x4EE43D`..). A zero step reads as a pause at `0x159234`. The
+  third argument of `0x2BADE0` is another thing: used only for the load's air customs
+  (`zoll_air_*`), it skips levelling and leaves the model hidden: fragment `+0x55` is
+  set at `0x2D636E` for every building, and the engine draws no model with `+0x54` or
+  `+0x55` (DLL `0x338F2`); a site's end clears it (`0x15C576`). The customs models hold
+  no ground: the flat surfaces near y = 0 total under 70 m2.
+- **Customs types change at a load.** With DLC3 owned (`0x996832`) and the state at
+  `0x9D5C80` in 3..6, a load renames `zoll_sahy`, `zoll_siatre`, `zoll_milhost` and
+  their `MIRRORZ_` to `DLC3_customs_small`, `_medium`, `_big`: the engine's Import
+  (DLC `0x2ED2D`, last argument from `0x758F`) and each building (`0x1F173B`). The state
+  differed between a PC's first load and later ones. A save loaded this way wrote no
+  `zoll_*` in `buildings.bin` and showed the ground without the house. Both are patched
+  off from the start (`KeepCustomsTypes`).
 
 ## Clock and threads
 
@@ -520,6 +565,15 @@ read in the disassembly, what a payer pays for is a guess unless said.
   unknown.
 - **No owner:** the scenario script `0x59F1F0` sets the balances (only from
   the function tables `0x909818`, `0x967320`).
+- **Loans:** the records are `world+0x10BD0`, 0x28 bytes each; `0x4B9490(world,
+  loan)` pays one a day, through a computed address (`lVar2 + world`), called
+  only from `0x4B96D3`. `+0x08` currency (1 dollars), `+0x10` days left, `+0x14`
+  amount, `+0x18` amount under penalty. `+0x0C` ($LoanSubType) is 0 from
+  `Loan_Borrow` and the loan windows do not read it; Republics keeps the owner there.
+- **Customs houses:** type category `0x14`, `$BORDER_BUILDING` at type `+0xAE0`.
+  Building `+0x9EC` is the currency it trades in: 3 dollars (the West), 4 rubles
+  (the Soviets). The load sets it on the two hidden border buildings by the sign
+  of x (`0x43768D`, `0x4376CD`); a map's own customs house is read as inferred.
 - **Load and new game:** the loader `0x430FC0` (`0x437CB6`, both at once),
   the header import `0x430690`; the new game's starting money `0x2FB1D0`.
 - **"Not enough money" checks:** the drag tick `0x5171A4`, `0x5172A9`;
@@ -538,3 +592,30 @@ read in the disassembly, what a payer pays for is a guess unless said.
 - The crash report's vectored exception handler (`core/host.cpp`) runs before
   any `__try`: a caught fault still produces a `=== CRASH` report and counts
   toward a limit of 8 per process.
+
+### The relocation button and the light tools (1.1.1.9)
+
+The relocation button only selects a tool (`worker_relocate`, `_educated`,
+`_inmate`); nothing else calls its routines from a window. The tool `2b8ce0` works
+from the window's building `+d298`: workers and educated workers go one call of
+`83c6a0` at a time, up to 10 or 5, and `83c6a0` draws from the game's `rand`.
+
+A Christmas line's points are 12 bytes (`e6fb0`, `ea950`, `ebf00` divide by 0xc),
+not 0x18. `ebf00` takes a `christmas_line_` tool as "in season": out of season it
+lights the lines and draws power for their buildings while one is selected. Tools
+stay selected through a tick here, so with time passing it must not see the tool.
+
+### Draw queues and an access road's bits (1.1.1.9)
+
+The nine 0xE0-byte draw queues hold meshes they do not own (entry `+0xC0`). A frame's
+worker pass fills the back queues, `0x5858F0` at `0x31767F` copies them to the front
+ones (back + 24), and the render thread draws those. A mesh freed before the copy stays
+in the queue; the memory only shows it once something else is written there. After a
+re-sync that was the first building picked: its model is loaded there. What frees the
+mesh is not traced. RepublicMP checks the front queues after the copy, which does not
+find a freed mesh that still reads as one.
+
+A construction site's materials come from its piece's length, the float edge `+0x11C`
+(`0x3BED90`). In one placement an access road's points differed between PCs in their
+last bits: 7 points on both, the length 228 float steps apart. Which end, and why, is
+still open; a placement's log line gives both ends with all their digits.
