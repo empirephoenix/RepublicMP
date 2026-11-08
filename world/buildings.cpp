@@ -7,6 +7,7 @@
 #include "view_list_scope.h"
 #include "menus_closed.h"
 #include "../game/input_block.h" // InputBlock_HoldInNeutral
+#include "../lockstep/commands.h" // Commands_PointInArea
 #include <vector>
 #include <algorithm>
 #include <stdio.h>
@@ -131,6 +132,66 @@ static void* PickMainNewObject(float x, float z, int* newCount, float* dist)
     return best;
 }
 
+// One new piece's site: its edge, or null.
+static BYTE* NewPieceEdge(void* obj)
+{
+    __try {
+        if (!obj || WasBeforePlacement(obj) || *(__int64*)((char*)obj + OBJ_TYPE_OFFSET)) return nullptr;
+        return *(BYTE**)((char*)obj + 0x5D0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+static bool EdgeEnds(const BYTE* edge, float a[3], float z[3])
+{
+    __try {
+        const BYTE* p = *(BYTE* const*)(edge + 8);
+        const BYTE* q = *(BYTE* const*)(edge + 0x10);
+        if (!p || q <= p) return false;
+        memcpy(a, p, sizeof(float) * 3);
+        memcpy(z, q - 0x18, sizeof(float) * 3);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// The new network pieces of a placement with an end outside the player's area
+// (an access road, which the building tool routes without the list above), for
+// the log; the first one's ends in `first`.
+#define NEW_PIECES_MAX 64
+static int NewPieceEdges(BYTE** out)
+{
+    int n = 0;
+    __try {
+        void** it = *(void***)((uintptr_t)g_exeBase + VEC_BUILDINGS_BEGIN_RVA);
+        void** end = *(void***)((uintptr_t)g_exeBase + VEC_BUILDINGS_END_RVA);
+        for (; it && it < end && n < NEW_PIECES_MAX; ++it)
+            if (BYTE* edge = NewPieceEdge(*it)) out[n++] = edge;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return n;
+}
+
+static int NewPiecesOutside(float first[6])
+{
+    BYTE* edges[NEW_PIECES_MAX];
+    int count = NewPieceEdges(edges);
+    int outside = 0;
+    for (int i = 0; i < count; i++) {
+        BYTE* edge = edges[i];
+        float a[3], z[3];
+        if (!EdgeEnds(edge, a, z) || (Commands_PointInArea(a, false) && Commands_PointInArea(z, false))) continue;
+        if (!outside) {
+            memcpy(first, a, sizeof(a));
+            memcpy(first + 3, z, sizeof(z));
+        }
+        outside++;
+    }
+    return outside;
+}
+
 // For the log: the new objects of a placement - category (-1: no type, as a
 // construction site's), offset from the cursor and construction progress - so
 // the PCs' logs show which object one of them made and another did not.
@@ -222,7 +283,10 @@ static __int64 FindBuildingAt(float x, float y, float z, int category)
 // list's address is taken through a relay: the native one, or while a
 // placement command is made the buildings near its cursor in the order of
 // the building list - the same on every PC. The other reads of the visible
-// list (preview hints, the new building's push) stay native.
+// list (preview hints, the new building's push) stay native. Under a mode's area
+// rule (Republics) only the buildings on the player's own side are in it: the
+// tool laid a conveyor from a new building to one of the other republic's, which
+// its owner could then not demolish.
 #define VISIBLE_LIST_OFFSET 0x11dc0
 #define LINK_SEARCH_RADIUS 400.0f
 static const unsigned kLinkSearchSites[] = { 0x2be0c0, 0x2c00fe, 0x2c15ca, 0x2c2ac0, 0x2c3e82, 0x2c52bb };
@@ -272,9 +336,49 @@ bool Buildings_InstallLinkSearch()
     return true;
 }
 
-static void NearBuildingsBegin(float x, float z)
+// The building's position; false if it cannot be read.
+static bool BuildingPosition(const BYTE* b, float out[3])
 {
-    if (!g_linkRelay) return;
+    __try {
+        memcpy(out, b + OBJ_POS_OFFSET, sizeof(float) * 3);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// The buildings on another player's side leave the list; how many did.
+static int LeaveOutForeign()
+{
+    size_t kept = 0;
+    int foreign = 0;
+    for (BYTE* b : g_nearBuildings) {
+        float pos[3];
+        if (BuildingPosition(b, pos) && !Commands_PointInArea(pos, false)) {
+            foreign++;
+            continue;
+        }
+        g_nearBuildings[kept++] = b;
+    }
+    g_nearBuildings.resize(kept);
+    return foreign;
+}
+
+static void NearBuildingsPublish();
+static int NearBuildingsCollect(float x, float z);
+
+// The buildings near (x, z) a placement command may connect to. Returns how many
+// were left out for being on another player's side.
+static int NearBuildingsBegin(float x, float z)
+{
+    int foreign = NearBuildingsCollect(x, z);
+    NearBuildingsPublish();
+    return foreign;
+}
+
+static int NearBuildingsCollect(float x, float z)
+{
+    if (!g_linkRelay) return 0;
     g_nearBuildings.clear();
     __try {
         BYTE** it = *(BYTE***)(g_exeBase + VEC_BUILDINGS_BEGIN_RVA);
@@ -289,6 +393,13 @@ static void NearBuildingsBegin(float x, float z)
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_nearBuildings.clear();
     }
+    return LeaveOutForeign();
+}
+
+// Then the list goes to the tool's six sites.
+static void NearBuildingsPublish()
+{
+    if (!g_linkRelay) return;
     BYTE** data = g_nearBuildings.data();
     g_nearList[0] = (BYTE*)data;
     g_nearList[1] = g_nearList[2] = (BYTE*)(data + g_nearBuildings.size());
@@ -446,7 +557,7 @@ bool Buildings_ApplyPlacementCommand(const BuildingMsg& msg)
             // The clicking PC's Ctrl (the tool reads it as the slow-rotate binding) leaves
             // out every automatic connection; the buildings to connect to are the same here.
             InputBlock_HoldInNeutral((msg.pickModes & BUILDING_PICK_NO_LINKS) ? BUILDING_NO_LINKS_BINDING : nullptr);
-            NearBuildingsBegin(msg.cursorX, msg.cursorZ);
+            int foreign = NearBuildingsBegin(msg.cursorX, msg.cursorZ);
             InterlockedIncrement(&g_applyingRemote);
             const int* result = (const int*)(thisPtr + PLACEMENT_RESULT_OFFSET);
             int clickResult[3] = { 0, 0, 0 };
@@ -480,6 +591,11 @@ bool Buildings_ApplyPlacementCommand(const BuildingMsg& msg)
             char modeText[96];
             char made[1400];
             DescribeNewObjects(msg.cursorX, msg.cursorZ, made, sizeof(made));
+            if (foreign) Logf("republicmp  BUILDINGS: %d building(s) near it on another player's side left out of its connections", foreign);
+            float ends[6];
+            if (int outside = placed ? NewPiecesOutside(ends) : 0)
+                Logf("republicmp  BUILDINGS: %d new piece(s) of this placement reach another player's side, the first (%.1f,%.1f)-(%.1f,%.1f)",
+                     outside, ends[0], ends[2], ends[3], ends[5]);
             Logf("republicmp  BUILDINGS: command placement type=[%s] pay=%s cursor=(%.2f,%.2f,%.2f)%s - %s (objects %d, click result %d,%d,%d, result %d,%d,%d) %s",
                  typeName, BuildMode_Describe(msg.mode, modeText, sizeof(modeText)), msg.cursorX, msg.cursorY, msg.cursorZ,
                  (msg.pickModes & BUILDING_PICK_NO_LINKS) ? " Ctrl: no connections" : "",

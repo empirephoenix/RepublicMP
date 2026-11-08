@@ -85,6 +85,7 @@ build (the build check refuses another DLL).
   day and its progress are always compared exactly.
 - The last game's log stays as `republicmp.previous.log`. A desync's money trace
   covers a whole check interval and shows both republics' accounts per tick and
+  the construction sites paid with money or with a progress below 0 every 300 ticks,
   the waste trucks' job searches (`WASTE_TRACE`): what each answered, what it read,
   which jobs it found taken and by which truck, and each change of a truck's job.
 
@@ -157,6 +158,11 @@ build (the build check refuses another DLL).
   were open to both players are gone: a place belongs to one republic, up to the
   line. Roads and rails now join the republics only through the customs houses on
   the line, whose ports lie on each side; those houses stay both players'.
+- **No automatic connections into the other republic** - the building tool lays a
+  new building's conveyors, pipes, footpaths, factory connections and fences to the
+  buildings around it by itself; only those on your own side count now. A conveyor
+  had reached from a new building to the other player's, and neither could remove it.
+  An access road that still reaches across is named in the log.
 - **A foreign pipeline and a power connection on the border between the republics**
   - the game now takes the line for a border for these two, as for its own: they
   stand across it, placed from your own half. They still trade abroad, with the
