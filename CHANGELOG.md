@@ -50,6 +50,9 @@ build (the build check refuses another DLL).
   site's worker at a point read from before the start of the piece's points
   on some stages, which is whatever the memory held on that PC. The worker now
   stands at the piece's first point.
+- **Fix: the game stopped at every load** (a test build only) - two types of
+  the same name in the mod shared code at the link, and reading the save's
+  `republicmp.ini` before the load ended the game (`0xC0000409` in RepublicMP.dll).
 - **Fix: commands lost after a re-sync** - a re-sync that cut off a command on its
   way (terrain and brush strokes above all) left it waiting, and it entered the
   next session with its old tick. A player then made none of the host's commands

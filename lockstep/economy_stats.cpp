@@ -25,6 +25,11 @@
 
 typedef unsigned long long U64;
 
+// This file's own types: save/mod_save.cpp has an Entry too, and two types of one
+// name share std::vector's code at the link - the ini reader then freed its
+// vector as this one and the game stopped at every load.
+namespace {
+
 // The game's list entry.
 struct Entry {
     U64 res;
@@ -43,6 +48,8 @@ struct Past {
     int index, day, year;
     Lists lists;
 };
+
+} // namespace
 
 // (world, source {resource, a, b}, list, price, use b, multiplier, money = b)
 typedef U64 (*StatsAddFn)(U64, U64, U64, float, U64, float, U64);

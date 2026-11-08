@@ -47,6 +47,8 @@ typedef unsigned __int64 U64;
 typedef U64 (*FindWasteFn)(U64 world, U64 office, float capacity, U64 list, unsigned char flag, U64* resource, U64 list2);
 typedef U64 (*FindUnloadFn)(U64 world, U64 vehicle, U64 resource, float radius, unsigned char flag);
 
+namespace { // this file's own types (see save/mod_save.cpp's Entry)
+
 struct Note {
     unsigned long long tick;
     int kind;     // 0 waste for an empty truck, 1 a place to unload
@@ -98,6 +100,8 @@ struct Known {
     TruckJob job;
     unsigned seen;
 };
+
+} // namespace
 
 static Note g_notes[NOTES];
 static unsigned long long g_count = 0;

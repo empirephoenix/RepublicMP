@@ -29,9 +29,11 @@ struct Section {
     ModSaveWriteFn write;
     ModSaveReadFn read;
 };
+namespace { // a name of this file's own (lockstep/economy_stats.cpp has an Entry too)
 struct Entry {
     std::string section, key, value;
 };
+} // namespace
 
 typedef void (*SaveFn)(unsigned char* world);
 static SaveFn o_save = nullptr;
